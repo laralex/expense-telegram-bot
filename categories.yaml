@@ -1,0 +1,18 @@
+- abbrev: F
+  keywords: [F, food]
+- abbrev: h
+  keywords: [h, home, medicine, hm]
+- abbrev: TT
+  keywords: [TT, transport, transportation]
+- abbrev: cloth
+  keywords: [cloth, clothes]
+- abbrev: fun
+  keywords: [fun, hangout, hanging]
+- abbrev: r
+  keywords: [r, rent, facilities]
+- abbrev: p
+  keywords: [p, periodic, subscription]
+- abbrev: travel
+  keywords: [travel]
+- abbrev: rel
+  keywords: [rel, relationship]
