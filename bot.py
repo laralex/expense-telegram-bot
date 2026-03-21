@@ -544,7 +544,7 @@ async def cb_report_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
             "Select month to report:",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
-    else:  # income
+    elif report_type == "income":
         months = store.list_income_months()
         if not months:
             await query.edit_message_text("❌ No income data yet.")
@@ -556,6 +556,28 @@ async def cb_report_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         await query.edit_message_text(
             "Select month to view income:",
             reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    else:  # balance
+        months = store.list_balance_months()
+        if not months:
+            await query.edit_message_text("❌ No balance data yet.")
+            return
+        historic_names = store.get_historic_names()
+        month_data = {m: store.get_balance_month(m) for m in months}
+        tab_lines  = render_balance_report(months, historic_names, month_data, separator="\t")
+        semi_lines = render_balance_report(months, historic_names, month_data, separator=";")
+        tab_report  = "\n".join(tab_lines)
+        semi_report = "\n".join(semi_lines)
+        buttons = []
+        if len(tab_report) <= 256:
+            buttons.append(InlineKeyboardButton("📋 Tab", copy_text=CopyTextButton(text=tab_report)))
+        if len(semi_report) <= 256:
+            buttons.append(InlineKeyboardButton("📋 ;",   copy_text=CopyTextButton(text=semi_report)))
+        buttons.append(InlineKeyboardButton("📎 .tsv", callback_data="balance_tsv"))
+        await query.edit_message_text(
+            f"<pre>{tab_report}</pre>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([buttons]),
         )
 
 
@@ -948,6 +970,26 @@ async def cb_income_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await query.message.reply_document(
         document=io.BytesIO(tsv_bytes),
         filename=f"income-{month}.tsv",
+    )
+
+
+# ── balance report ────────────────────────────────────────────────────────────
+
+async def cb_balance_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    store: Storage = ctx.bot_data["store"]
+    months = store.list_balance_months()
+    if not months:
+        await query.message.reply_text("❌ No balance data yet.")
+        return
+    historic_names = store.get_historic_names()
+    month_data = {m: store.get_balance_month(m) for m in months}
+    lines = render_balance_report(months, historic_names, month_data, separator="\t")
+    tsv_bytes = "\n".join(lines).encode("utf-8")
+    await query.message.reply_document(
+        document=io.BytesIO(tsv_bytes),
+        filename="balances.tsv",
     )
 
 
