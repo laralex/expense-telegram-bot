@@ -514,11 +514,11 @@ async def cb_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     semi_report = "\n".join(semi_lines)
     buttons = []
     if len(tab_report) <= 256:
-        buttons.append(InlineKeyboardButton("📋 Tab", copy_text=CopyTextButton(text=tab_report)))
+        buttons.append(InlineKeyboardButton("Tab separated", copy_text=CopyTextButton(text=tab_report)))
     if len(semi_report) <= 256:
-        buttons.append(InlineKeyboardButton("📋 ;", copy_text=CopyTextButton(text=semi_report)))
-    buttons.append(InlineKeyboardButton("📎 .tsv", callback_data=f"tsv:{month}"))
-    keyboard = InlineKeyboardMarkup([buttons])
+        buttons.append(InlineKeyboardButton("Semicolon separated", copy_text=CopyTextButton(text=semi_report)))
+    buttons.append(InlineKeyboardButton(".tsv file", callback_data=f"tsv:{month}"))
+    keyboard = InlineKeyboardMarkup([[b] for b in buttons])
     await query.edit_message_text(
         f"<pre>{tab_report}</pre>",
         parse_mode="HTML",
@@ -571,14 +571,14 @@ async def cb_report_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         semi_report = "\n".join(semi_lines)
         buttons = []
         if len(tab_report) <= 256:
-            buttons.append(InlineKeyboardButton("📋 Tab", copy_text=CopyTextButton(text=tab_report)))
+            buttons.append(InlineKeyboardButton("Tab separated", copy_text=CopyTextButton(text=tab_report)))
         if len(semi_report) <= 256:
-            buttons.append(InlineKeyboardButton("📋 ;",   copy_text=CopyTextButton(text=semi_report)))
-        buttons.append(InlineKeyboardButton("📎 .tsv", callback_data="balance_tsv"))
+            buttons.append(InlineKeyboardButton("Semicolon separated", copy_text=CopyTextButton(text=semi_report)))
+        buttons.append(InlineKeyboardButton(".tsv file", callback_data="balance_tsv"))
         await query.edit_message_text(
             f"<pre>{tab_report}</pre>",
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([buttons]),
+            reply_markup=InlineKeyboardMarkup([[b] for b in buttons]),
         )
 
 
@@ -945,14 +945,14 @@ async def cb_income_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
     semi_report = "\n".join(semi_lines)
     buttons = []
     if len(tab_report) <= 256:
-        buttons.append(InlineKeyboardButton("📋 Tab", copy_text=CopyTextButton(text=tab_report)))
+        buttons.append(InlineKeyboardButton("Tab separated", copy_text=CopyTextButton(text=tab_report)))
     if len(semi_report) <= 256:
-        buttons.append(InlineKeyboardButton("📋 ;", copy_text=CopyTextButton(text=semi_report)))
-    buttons.append(InlineKeyboardButton("📎 .tsv", callback_data=f"income_tsv:{month}"))
+        buttons.append(InlineKeyboardButton("Semicolon separated", copy_text=CopyTextButton(text=semi_report)))
+    buttons.append(InlineKeyboardButton(".tsv file", callback_data=f"income_tsv:{month}"))
     await query.edit_message_text(
         f"<pre>{tab_report}</pre>",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([buttons]),
+        reply_markup=InlineKeyboardMarkup([[b] for b in buttons]),
     )
 
 
