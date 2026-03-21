@@ -15,6 +15,7 @@
 Requirements: Python 3.11+, python-telegram-bot v20+
 """
 
+import difflib
 import io
 import os
 from datetime import datetime
@@ -73,6 +74,99 @@ def _income_field(record: tuple, month: str) -> dict:
         "month":   str(int(mon)),
         "name":    name,
     }
+
+
+BALANCE_FUZZY_CUTOFF = 0.6
+BALANCE_FUZZY_MAX_MATCHES = 3
+
+
+def _format_balance_amount(amount: float | None) -> str:
+    """Format a balance amount for display. None → '—'; whole floats drop decimal."""
+    if amount is None:
+        return "—"
+    return str(int(amount)) if amount == int(amount) else str(amount)
+
+
+def _resolve_balance_name(input_name: str, current_names: list[str]) -> tuple[str | None, list[str]]:
+    """
+    Fuzzy-match input_name against current_names.
+    Returns (matched_name, []) on single match,
+            (None, candidates) on multiple matches,
+            (None, []) on no match or empty list.
+    """
+    if not current_names:
+        return None, []
+    lower_input = input_name.lower()
+    lower_names = [n.lower() for n in current_names]
+    matches = difflib.get_close_matches(
+        lower_input, lower_names,
+        n=BALANCE_FUZZY_MAX_MATCHES,
+        cutoff=BALANCE_FUZZY_CUTOFF,
+    )
+    if not matches:
+        return None, []
+    original_matches = [current_names[lower_names.index(m)] for m in matches]
+    if len(original_matches) == 1:
+        return original_matches[0], []
+    return None, original_matches
+
+
+def _build_balance_menu(
+    month: str,
+    current_names: list[str],
+    month_values: dict[str, float],
+) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Build the /balance main menu keyboard.
+    month_values: {name: amount} for the current month (may be partial or empty).
+    Pure function — no I/O.
+    """
+    text = f"Balances — {_month_label(month)}"
+    rows = []
+    rows.append([
+        InlineKeyboardButton("＋ Add",    callback_data="balance_add"),
+        InlineKeyboardButton("－ Remove", callback_data="balance_remove"),
+    ])
+    for name in current_names:
+        amount = month_values.get(name)
+        label = f"{name}: {_format_balance_amount(amount)}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"balance_set:{name}")])
+    rows.append([InlineKeyboardButton("✓ Done", callback_data="balance_done")])
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _build_balance_remove_confirm(name: str) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the remove-confirmation keyboard for a named balance. Pure function."""
+    text = f'Remove "{name}"?'
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Keep history",   callback_data=f"balance_remove_keep:{name}"),
+        InlineKeyboardButton("Delete history", callback_data=f"balance_remove_delete:{name}"),
+        InlineKeyboardButton("Cancel",         callback_data="balance_remove_cancel"),
+    ]])
+    return text, keyboard
+
+
+def render_balance_report(
+    months: list[str],
+    historic_names: list[str],
+    month_data: dict[str, dict[str, float]],
+    separator: str = "\t",
+) -> list[str]:
+    """
+    Render a balance report as a list of separator-joined strings.
+    First element is the header row. Months in the order given (caller sorts).
+    Missing values produce empty cells. Pure function.
+    """
+    header = separator.join(["month"] + historic_names)
+    rows = [header]
+    for month in months:
+        values = month_data.get(month, {})
+        cells = [month] + [
+            _format_balance_amount(values.get(name)) if name in values else ""
+            for name in historic_names
+        ]
+        rows.append(separator.join(cells))
+    return rows
 
 
 def render_rows(
@@ -166,6 +260,7 @@ def _build_report_type_keyboard() -> tuple:
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Expenses", callback_data="report_type:expense"),
         InlineKeyboardButton("Income",   callback_data="report_type:income"),
+        InlineKeyboardButton("Balances", callback_data="report_type:balance"),
     ]])
     return "Select report type:", keyboard
 

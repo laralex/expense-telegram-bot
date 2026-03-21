@@ -5,7 +5,12 @@ import os
 # bot.py lives one level above tests/
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from bot import render_rows, _expense_field, _income_field, _build_fmt_editor, _format_erase_preview, _build_report_type_keyboard, _build_erase_keyboard
+from bot import (
+    render_rows, _expense_field, _income_field, _build_fmt_editor,
+    _format_erase_preview, _build_report_type_keyboard, _build_erase_keyboard,
+    _format_balance_amount, _resolve_balance_name, _build_balance_menu,
+    _build_balance_remove_confirm, render_balance_report,
+)
 
 REPORT_COLUMNS = {
     "expense": ["date", "category", "title", "amount"],
@@ -354,3 +359,181 @@ def test_erase_keyboard_next_absent_on_last_page():
     _, markup = _build_erase_keyboard(_state(records=records, page=1))
     all_cb = _all_cb(markup)
     assert "erase_page:2" not in all_cb
+
+
+# ── _format_balance_amount ────────────────────────────────────────────────────
+
+def test_format_balance_amount_none_returns_dash():
+    assert _format_balance_amount(None) == "—"
+
+
+def test_format_balance_amount_whole_float_no_decimal():
+    assert _format_balance_amount(5000.0) == "5000"
+
+
+def test_format_balance_amount_fractional_keeps_decimal():
+    assert _format_balance_amount(5000.5) == "5000.5"
+
+
+# ── _resolve_balance_name ─────────────────────────────────────────────────────
+
+def test_resolve_balance_exact_single_match():
+    matched, candidates = _resolve_balance_name("savings", ["Savings", "Checking"])
+    assert matched == "Savings"
+    assert candidates == []
+
+
+def test_resolve_balance_fuzzy_single_match():
+    matched, candidates = _resolve_balance_name("saving", ["Savings", "Checking"])
+    assert matched == "Savings"
+    assert candidates == []
+
+
+def test_resolve_balance_multiple_matches_returns_none_and_list():
+    matched, candidates = _resolve_balance_name("saving", ["Savings1", "Savings2"])
+    assert matched is None
+    assert len(candidates) >= 1
+
+
+def test_resolve_balance_no_match_returns_empty_candidates():
+    matched, candidates = _resolve_balance_name("zzz", ["Savings", "Checking"])
+    assert matched is None
+    assert candidates == []
+
+
+def test_resolve_balance_empty_names_returns_none():
+    matched, candidates = _resolve_balance_name("savings", [])
+    assert matched is None
+    assert candidates == []
+
+
+def test_resolve_balance_case_insensitive():
+    matched, candidates = _resolve_balance_name("SAVINGS", ["Savings"])
+    assert matched == "Savings"
+
+
+# ── _build_balance_menu ───────────────────────────────────────────────────────
+
+def _balance_menu_cb(markup):
+    return [btn.callback_data for row in markup.inline_keyboard for btn in row if btn.callback_data]
+
+
+def test_balance_menu_text_includes_month():
+    text, _ = _build_balance_menu("2026-03", ["Savings"], {"Savings": 5000.0})
+    assert "March 2026" in text
+
+
+def test_balance_menu_shows_balance_with_value():
+    _, markup = _build_balance_menu("2026-03", ["Savings"], {"Savings": 5000.0})
+    texts = [btn.text for row in markup.inline_keyboard for btn in row]
+    assert any("Savings" in t and "5000" in t for t in texts)
+
+
+def test_balance_menu_shows_dash_when_no_value():
+    _, markup = _build_balance_menu("2026-03", ["Savings"], {})
+    texts = [btn.text for row in markup.inline_keyboard for btn in row]
+    assert any("Savings" in t and "—" in t for t in texts)
+
+
+def test_balance_menu_has_add_remove_done_buttons():
+    _, markup = _build_balance_menu("2026-03", ["Savings"], {})
+    cbs = _balance_menu_cb(markup)
+    assert "balance_add" in cbs
+    assert "balance_remove" in cbs
+    assert "balance_done" in cbs
+
+
+def test_balance_menu_balance_button_callback():
+    _, markup = _build_balance_menu("2026-03", ["Savings"], {})
+    cbs = _balance_menu_cb(markup)
+    assert any(cb.startswith("balance_set:Savings") for cb in cbs)
+
+
+def test_balance_menu_empty_names_no_balance_buttons():
+    _, markup = _build_balance_menu("2026-03", [], {})
+    cbs = _balance_menu_cb(markup)
+    assert not any(cb.startswith("balance_set:") for cb in cbs)
+
+
+# ── _build_balance_remove_confirm ─────────────────────────────────────────────
+
+def test_balance_remove_confirm_text_includes_name():
+    text, _ = _build_balance_remove_confirm("Savings")
+    assert "Savings" in text
+
+
+def test_balance_remove_confirm_has_three_buttons():
+    _, markup = _build_balance_remove_confirm("Savings")
+    cbs = [btn.callback_data for row in markup.inline_keyboard for btn in row if btn.callback_data]
+    assert "balance_remove_keep:Savings" in cbs
+    assert "balance_remove_delete:Savings" in cbs
+    assert "balance_remove_cancel" in cbs
+
+
+# ── render_balance_report ─────────────────────────────────────────────────────
+
+def test_render_balance_report_header_row():
+    lines = render_balance_report(
+        months=["2026-03"],
+        historic_names=["Savings", "Checking"],
+        month_data={"2026-03": {"Savings": 5000.0}},
+        separator="\t",
+    )
+    assert lines[0] == "month\tSavings\tChecking"
+
+
+def test_render_balance_report_data_row_with_value():
+    lines = render_balance_report(
+        months=["2026-03"],
+        historic_names=["Savings"],
+        month_data={"2026-03": {"Savings": 5000.0}},
+        separator="\t",
+    )
+    assert lines[1] == "2026-03\t5000"
+
+
+def test_render_balance_report_missing_value_is_empty():
+    lines = render_balance_report(
+        months=["2026-03"],
+        historic_names=["Savings", "Checking"],
+        month_data={"2026-03": {"Savings": 5000.0}},
+        separator="\t",
+    )
+    assert lines[1] == "2026-03\t5000\t"
+
+
+def test_render_balance_report_semicolon_separator():
+    lines = render_balance_report(
+        months=["2026-03"],
+        historic_names=["Savings"],
+        month_data={"2026-03": {"Savings": 1200.0}},
+        separator=";",
+    )
+    assert lines[1] == "2026-03;1200"
+
+
+def test_render_balance_report_multiple_months_order_preserved():
+    lines = render_balance_report(
+        months=["2026-03", "2026-02"],
+        historic_names=["Savings"],
+        month_data={
+            "2026-03": {"Savings": 5000.0},
+            "2026-02": {"Savings": 4800.0},
+        },
+        separator="\t",
+    )
+    assert "2026-03" in lines[1]
+    assert "2026-02" in lines[2]
+
+
+def test_render_balance_report_empty_returns_header_only():
+    lines = render_balance_report([], ["Savings"], {}, separator="\t")
+    assert lines == ["month\tSavings"]
+
+
+# ── report type keyboard (updated for balance) ────────────────────────────────
+
+def test_report_type_keyboard_has_balances_button():
+    _, markup = _build_report_type_keyboard()
+    all_data = [btn.callback_data for row in markup.inline_keyboard for btn in row if btn.callback_data]
+    assert "report_type:balance" in all_data
