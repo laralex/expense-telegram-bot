@@ -311,3 +311,119 @@ def test_delete_income_by_index_preserves_taxable_flag(tmp_path):
     assert amount_str == "200.0"
     assert taxable is False
     assert name == "Gift"
+
+
+# ── balances ──────────────────────────────────────────────────────────────────
+
+def test_get_balance_names_empty_when_no_file(tmp_store):
+    assert tmp_store.get_balance_names() == []
+
+
+def test_get_historic_names_empty_when_no_file(tmp_store):
+    assert tmp_store.get_historic_names() == []
+
+
+def test_balances_file_not_created_on_read(tmp_path):
+    s = Storage(data_dir=str(tmp_path))
+    s.get_balance_names()
+    assert not (tmp_path / "balances.json").exists()
+
+
+def test_add_balance_name_appears_in_both_lists(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    assert "Savings" in tmp_store.get_balance_names()
+    assert "Savings" in tmp_store.get_historic_names()
+
+
+def test_add_balance_name_noop_if_already_current(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    tmp_store.add_balance_name("Savings")
+    assert tmp_store.get_balance_names().count("Savings") == 1
+
+
+def test_add_balance_name_readds_to_current_only_if_in_historic(tmp_path):
+    """Name removed with keep_history=True: re-adding puts it back in current only."""
+    s = Storage(data_dir=str(tmp_path))
+    s.add_balance_name("Savings")
+    s.remove_balance_name("Savings", keep_history=True)
+    assert "Savings" not in s.get_balance_names()
+    assert "Savings" in s.get_historic_names()
+    s.add_balance_name("Savings")
+    assert "Savings" in s.get_balance_names()
+    assert s.get_historic_names().count("Savings") == 1  # not duplicated
+
+
+def test_add_balance_name_persists(tmp_path):
+    s1 = Storage(data_dir=str(tmp_path))
+    s1.add_balance_name("Checking")
+    s2 = Storage(data_dir=str(tmp_path))
+    assert "Checking" in s2.get_balance_names()
+
+
+def test_remove_balance_name_keep_history(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    tmp_store.remove_balance_name("Savings", keep_history=True)
+    assert "Savings" not in tmp_store.get_balance_names()
+    assert "Savings" in tmp_store.get_historic_names()
+
+
+def test_remove_balance_name_delete_history(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    tmp_store.set_balance("2026-03", "Savings", 5000.0)
+    tmp_store.remove_balance_name("Savings", keep_history=False)
+    assert "Savings" not in tmp_store.get_balance_names()
+    assert "Savings" not in tmp_store.get_historic_names()
+    assert tmp_store.get_balance_month("2026-03") == {}
+
+
+def test_remove_balance_name_prunes_empty_months(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    tmp_store.set_balance("2026-03", "Savings", 5000.0)
+    tmp_store.remove_balance_name("Savings", keep_history=False)
+    assert "2026-03" not in tmp_store._read_balances()["months"]
+
+
+def test_remove_balance_name_noop_for_unknown(tmp_store):
+    tmp_store.remove_balance_name("Ghost", keep_history=False)  # must not raise
+
+
+def test_remove_balance_name_keeps_other_names(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    tmp_store.add_balance_name("Checking")
+    tmp_store.remove_balance_name("Savings", keep_history=False)
+    assert "Checking" in tmp_store.get_balance_names()
+
+
+def test_set_balance_upserts_value(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    tmp_store.set_balance("2026-03", "Savings", 5000.0)
+    assert tmp_store.get_balance_month("2026-03") == {"Savings": 5000.0}
+
+
+def test_set_balance_latest_wins(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    tmp_store.set_balance("2026-03", "Savings", 4000.0)
+    tmp_store.set_balance("2026-03", "Savings", 5000.0)
+    assert tmp_store.get_balance_month("2026-03")["Savings"] == 5000.0
+
+
+def test_set_balance_raises_for_unknown_name(tmp_store):
+    with pytest.raises(ValueError):
+        tmp_store.set_balance("2026-03", "Ghost", 1000.0)
+
+
+def test_get_balance_month_absent_returns_empty(tmp_store):
+    assert tmp_store.get_balance_month("2026-01") == {}
+
+
+def test_list_balance_months_sorted_descending(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    tmp_store.set_balance("2026-01", "Savings", 100.0)
+    tmp_store.set_balance("2026-03", "Savings", 300.0)
+    tmp_store.set_balance("2026-02", "Savings", 200.0)
+    months = tmp_store.list_balance_months()
+    assert months == ["2026-03", "2026-02", "2026-01"]
+
+
+def test_list_balance_months_empty_when_no_data(tmp_store):
+    assert tmp_store.list_balance_months() == []

@@ -219,3 +219,75 @@ class Storage:
             [path.stem[7:] for path in self._dir.glob("income-????-??.txt")],
             reverse=True,
         )
+
+    # ── balances ──────────────────────────────────────────────────────────────
+
+    _BALANCES_DEFAULT: dict = {"current_names": [], "historic_names": [], "months": {}}
+
+    def _read_balances(self) -> dict:
+        """Load balances.json; return default structure if absent."""
+        path = self._dir / "balances.json"
+        if not path.exists():
+            return {k: list(v) if isinstance(v, list) else dict(v)
+                    for k, v in self._BALANCES_DEFAULT.items()}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        result = {k: list(v) if isinstance(v, list) else dict(v)
+                  for k, v in self._BALANCES_DEFAULT.items()}
+        result.update(data)
+        return result
+
+    def _write_balances(self, data: dict) -> None:
+        """Atomically write balances dict."""
+        path = self._dir / "balances.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(path)
+
+    def get_balance_names(self) -> list[str]:
+        """Return active balance names (current_names)."""
+        return self._read_balances()["current_names"]
+
+    def get_historic_names(self) -> list[str]:
+        """Return all balance names ever recorded (historic_names)."""
+        return self._read_balances()["historic_names"]
+
+    def add_balance_name(self, name: str) -> None:
+        """Add name to current_names (and historic_names if new). No-op if already current."""
+        data = self._read_balances()
+        if name in data["current_names"]:
+            return
+        data["current_names"].append(name)
+        if name not in data["historic_names"]:
+            data["historic_names"].append(name)
+        self._write_balances(data)
+
+    def remove_balance_name(self, name: str, keep_history: bool) -> None:
+        """Remove name from current_names. If keep_history=False, also wipes historic and monthly data."""
+        data = self._read_balances()
+        if name not in data["current_names"]:
+            return
+        data["current_names"].remove(name)
+        if not keep_history:
+            if name in data["historic_names"]:
+                data["historic_names"].remove(name)
+            for month in list(data["months"].keys()):
+                data["months"][month].pop(name, None)
+                if not data["months"][month]:
+                    del data["months"][month]
+        self._write_balances(data)
+
+    def set_balance(self, month: str, name: str, amount: float) -> None:
+        """Upsert months[month][name]. Raises ValueError if name not in current_names."""
+        data = self._read_balances()
+        if name not in data["current_names"]:
+            raise ValueError(f"Unknown balance name: {name!r}")
+        data["months"].setdefault(month, {})[name] = amount
+        self._write_balances(data)
+
+    def get_balance_month(self, month: str) -> dict[str, float]:
+        """Return {name: amount} for the given month (empty dict if absent)."""
+        return dict(self._read_balances()["months"].get(month, {}))
+
+    def list_balance_months(self) -> list[str]:
+        """All months with any balance data, sorted descending."""
+        return sorted(self._read_balances()["months"].keys(), reverse=True)
