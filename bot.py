@@ -12,7 +12,7 @@
 
 4. For production, deploy with the provided expense-tracker.service systemd unit.
 
-Requirements: Python 3.11+, python-telegram-bot v20+
+Requirements: Python 3.9+, python-telegram-bot v20+
 """
 
 import difflib
@@ -20,6 +20,7 @@ import io
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 from telegram import BotCommand, CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -80,14 +81,14 @@ BALANCE_FUZZY_CUTOFF = 0.6
 BALANCE_FUZZY_MAX_MATCHES = 3
 
 
-def _format_balance_amount(amount: float | None) -> str:
+def _format_balance_amount(amount: Optional[float]) -> str:
     """Format a balance amount for display. None → '—'; whole floats drop decimal."""
     if amount is None:
         return "—"
     return str(int(amount)) if amount == int(amount) else str(amount)
 
 
-def _resolve_balance_name(input_name: str, current_names: list[str]) -> tuple[str | None, list[str]]:
+def _resolve_balance_name(input_name: str, current_names: list[str]) -> tuple[Optional[str], list[str]]:
     """
     Fuzzy-match input_name against current_names.
     Returns (matched_name, []) on single match,
