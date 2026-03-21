@@ -381,6 +381,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/report — generate report\n"
         "/erase — menu to delete individual records (expenses or income)\n"
         "/erase N — delete last N expense records\n"
+        "/balance — manage account balances\n"
         "/month — change active month\n"
         "/settings — change bot settings\n",
         parse_mode="Markdown",
@@ -1177,6 +1178,7 @@ async def post_init(app: Application) -> None:
         BotCommand("in", "Record income entry"),
         BotCommand("out", "Record expense"),
         BotCommand("settings", "Configure report format"),
+        BotCommand("balance", "Manage account balances"),
     ])
 
 
@@ -1204,6 +1206,7 @@ def main() -> None:
     app.add_handler(CommandHandler("in", cmd_income))
     app.add_handler(CommandHandler("out", cmd_out))
     app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CommandHandler("balance", cmd_balance))
 
     # Callbacks
     app.add_handler(CallbackQueryHandler(cb_set_month,    pattern=r"^set_month:"))
@@ -1228,6 +1231,18 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_fmt_nav,  pattern=r"^fmt_nav:"))
     app.add_handler(CallbackQueryHandler(cb_fmt_add,  pattern=r"^fmt_add:"))
     app.add_handler(CallbackQueryHandler(cb_fmt_del,  pattern=r"^fmt_del:"))
+    app.add_handler(CallbackQueryHandler(cb_balance_pick,          pattern=r"^balance_pick:"))
+    app.add_handler(CallbackQueryHandler(cb_balance_pick_new,      pattern=r"^balance_pick_new$"))
+    app.add_handler(CallbackQueryHandler(cb_balance_set,           pattern=r"^balance_set:"))
+    app.add_handler(CallbackQueryHandler(cb_balance_add,           pattern=r"^balance_add$"))
+    app.add_handler(CallbackQueryHandler(cb_balance_remove,        pattern=r"^balance_remove$"))
+    app.add_handler(CallbackQueryHandler(cb_balance_remove_pick,   pattern=r"^balance_remove_pick:"))
+    app.add_handler(CallbackQueryHandler(cb_balance_remove_keep,   pattern=r"^balance_remove_keep:"))
+    app.add_handler(CallbackQueryHandler(cb_balance_remove_delete, pattern=r"^balance_remove_delete:"))
+    app.add_handler(CallbackQueryHandler(cb_balance_remove_cancel, pattern=r"^balance_remove_cancel$"))
+    app.add_handler(CallbackQueryHandler(cb_balance_back,          pattern=r"^balance_back$"))
+    app.add_handler(CallbackQueryHandler(cb_balance_done,          pattern=r"^balance_done$"))
+    app.add_handler(CallbackQueryHandler(cb_balance_tsv,           pattern=r"^balance_tsv$"))
 
     # Payment messages (any non-command text)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payment))
