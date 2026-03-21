@@ -435,6 +435,57 @@ async def cmd_erase(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Select type to erase:", reply_markup=keyboard)
 
 
+async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    store: Storage = ctx.bot_data["store"]
+    args = update.message.text.strip().split(None, 2)
+
+    # Quick form: /balance <name> <amount>
+    if len(args) == 3:
+        name_input, amount_str = args[1], args[2]
+        try:
+            amount = float(amount_str)
+        except ValueError:
+            await update.message.reply_text("❌ Amount must be a number.")
+            return
+        current_names = store.get_balance_names()
+        if not current_names:
+            await update.message.reply_text("No balances yet. Use /balance to add one.")
+            return
+        matched, candidates = _resolve_balance_name(name_input, current_names)
+        if matched:
+            store.set_balance(store.get_current_month(), matched, amount)
+            await update.message.reply_text(
+                f"✅ *{matched}*: {_format_balance_amount(amount)} ({_month_label(store.get_current_month())})",
+                parse_mode="Markdown",
+            )
+        elif candidates:
+            ctx.user_data["balance"] = {"awaiting": None, "pending_amount": amount,
+                                         "pending_name": None, "menu_message_id": None}
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(n, callback_data=f"balance_pick:{n}")]
+                for n in candidates
+            ])
+            await update.message.reply_text("Which balance?", reply_markup=keyboard)
+        else:
+            ctx.user_data["balance"] = {"awaiting": None, "pending_amount": amount,
+                                         "pending_name": None, "menu_message_id": None}
+            rows = [[InlineKeyboardButton(n, callback_data=f"balance_pick:{n}")] for n in current_names]
+            rows.append([InlineKeyboardButton("＋ Create new", callback_data="balance_pick_new")])
+            await update.message.reply_text("Select balance:", reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    # Menu form: /balance
+    month = store.get_current_month()
+    month_values = store.get_balance_month(month)
+    current_names = store.get_balance_names()
+    text, markup = _build_balance_menu(month, current_names, month_values)
+    msg = await update.message.reply_text(text, reply_markup=markup)
+    ctx.user_data["balance"] = {
+        "awaiting": None, "pending_amount": None,
+        "pending_name": None, "menu_message_id": msg.message_id,
+    }
+
+
 # ── callback handlers ─────────────────────────────────────────────────────────
 
 async def cb_set_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -696,6 +747,128 @@ async def cb_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+# ── balance callbacks ─────────────────────────────────────────────────────────
+
+async def _render_balance_menu_on_query(query, store: Storage) -> None:
+    """Re-render the balance menu on an existing query message."""
+    month = store.get_current_month()
+    month_values = store.get_balance_month(month)
+    text, markup = _build_balance_menu(month, store.get_balance_names(), month_values)
+    await query.edit_message_text(text, reply_markup=markup)
+
+
+async def cb_balance_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User picked a balance from the disambiguation / no-match picker."""
+    query = update.callback_query
+    await query.answer()
+    name = query.data.split(":", 1)[1]
+    store: Storage = ctx.bot_data["store"]
+    state = ctx.user_data.get("balance", {})
+    amount = state.get("pending_amount")
+    month = store.get_current_month()
+    store.set_balance(month, name, amount)
+    ctx.user_data.pop("balance", None)
+    await query.edit_message_text(
+        f"✅ *{name}*: {_format_balance_amount(amount)} ({_month_label(month)})",
+        parse_mode="Markdown",
+    )
+
+
+async def cb_balance_pick_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User chose '＋ Create new' from the no-match picker."""
+    query = update.callback_query
+    await query.answer()
+    state = ctx.user_data.setdefault("balance", {})
+    state["awaiting"] = "add_name"
+    state["menu_message_id"] = None
+    await query.edit_message_text("Enter a name for the new balance:")
+
+
+async def cb_balance_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User tapped a balance button in the menu — prompt for a value."""
+    query = update.callback_query
+    await query.answer()
+    name = query.data.split(":", 1)[1]
+    state = ctx.user_data.setdefault("balance", {})
+    state["awaiting"] = "set_value"
+    state["pending_name"] = name
+    state["menu_message_id"] = query.message.message_id
+    await query.edit_message_text(f"Enter new value for *{name}*:", parse_mode="Markdown")
+
+
+async def cb_balance_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User tapped ＋ Add in the menu."""
+    query = update.callback_query
+    await query.answer()
+    state = ctx.user_data.setdefault("balance", {})
+    state["awaiting"] = "add_name"
+    state["pending_amount"] = None
+    state["menu_message_id"] = query.message.message_id
+    await query.edit_message_text("Enter a name for the new balance:")
+
+
+async def cb_balance_remove(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User tapped － Remove — show list of current balances."""
+    query = update.callback_query
+    await query.answer()
+    store: Storage = ctx.bot_data["store"]
+    names = store.get_balance_names()
+    if not names:
+        await query.answer("No balances to remove.", show_alert=True)
+        return
+    rows = [[InlineKeyboardButton(n, callback_data=f"balance_remove_pick:{n}")] for n in names]
+    rows.append([InlineKeyboardButton("← Back", callback_data="balance_back")])
+    await query.edit_message_text("Select balance to remove:", reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def cb_balance_remove_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User picked a balance to remove — show keep/delete confirmation."""
+    query = update.callback_query
+    await query.answer()
+    name = query.data.split(":", 1)[1]
+    text, markup = _build_balance_remove_confirm(name)
+    await query.edit_message_text(text, reply_markup=markup)
+
+
+async def cb_balance_remove_keep(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    name = query.data.split(":", 1)[1]
+    store: Storage = ctx.bot_data["store"]
+    store.remove_balance_name(name, keep_history=True)
+    await _render_balance_menu_on_query(query, store)
+
+
+async def cb_balance_remove_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    name = query.data.split(":", 1)[1]
+    store: Storage = ctx.bot_data["store"]
+    store.remove_balance_name(name, keep_history=False)
+    await _render_balance_menu_on_query(query, store)
+
+
+async def cb_balance_remove_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    store: Storage = ctx.bot_data["store"]
+    await _render_balance_menu_on_query(query, store)
+
+
+async def cb_balance_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    store: Storage = ctx.bot_data["store"]
+    await _render_balance_menu_on_query(query, store)
+
+
+async def cb_balance_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    ctx.user_data.pop("balance", None)
+    await query.edit_message_text("✅ Done.")
+
+
 # ── income handlers ───────────────────────────────────────────────────────────
 
 async def cmd_income(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -797,7 +970,54 @@ async def _record_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
     )
 
 
+async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle free-text replies during balance awaiting flows."""
+    state = ctx.user_data.get("balance", {})
+    awaiting = state.get("awaiting")
+    text = update.message.text.strip()
+    store: Storage = ctx.bot_data["store"]
+
+    if awaiting == "set_value":
+        try:
+            amount = float(text)
+        except ValueError:
+            await update.message.reply_text("❌ Please enter a number.")
+            return
+        name = state["pending_name"]
+        month = store.get_current_month()
+        store.set_balance(month, name, amount)
+        ctx.user_data.pop("balance", None)
+        month_values = store.get_balance_month(month)
+        menu_text, markup = _build_balance_menu(month, store.get_balance_names(), month_values)
+        await update.message.reply_text(
+            f"✅ {name}: {_format_balance_amount(amount)}\n\n{menu_text}",
+            reply_markup=markup,
+        )
+
+    elif awaiting == "add_name":
+        if not text:
+            await update.message.reply_text("❌ Name cannot be empty.")
+            return
+        store.add_balance_name(text)
+        pending_amount = state.get("pending_amount")
+        month = store.get_current_month()
+        if pending_amount is not None:
+            store.set_balance(month, text, pending_amount)
+        ctx.user_data.pop("balance", None)
+        month_values = store.get_balance_month(month)
+        menu_text, markup = _build_balance_menu(month, store.get_balance_names(), month_values)
+        await update.message.reply_text(
+            f"✅ Added *{text}*.\n\n{menu_text}",
+            parse_mode="Markdown",
+            reply_markup=markup,
+        )
+
+
 async def handle_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    balance_state = ctx.user_data.get("balance", {})
+    if balance_state.get("awaiting"):
+        await _handle_balance_text(update, ctx)
+        return
     await _record_payment(update, ctx, update.message.text.strip())
 
 
