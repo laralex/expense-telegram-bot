@@ -12,6 +12,12 @@ VENV="$DEPLOY_DIR/.venv"
 
 FILES=(bot.py parser.py storage.py categories.yaml requirements.txt "$SERVICE_FILE")
 
+echo "==> Pulling latest from main"
+git pull origin main
+
+echo "==> Stopping existing service (if running)"
+sudo systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+
 echo "==> Creating $DEPLOY_DIR"
 sudo mkdir -p "$DEPLOY_DIR"
 
