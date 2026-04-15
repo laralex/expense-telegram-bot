@@ -16,8 +16,12 @@ Public API:
 
 import json
 import os
+import re
 from datetime import date
 from pathlib import Path
+from typing import Optional
+
+_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
 
 class Storage:
@@ -222,10 +226,16 @@ class Storage:
 
     # ── balances ──────────────────────────────────────────────────────────────
 
-    _BALANCES_DEFAULT: dict = {"current_names": [], "historic_names": [], "months": {}}
+    _BALANCES_DEFAULT: dict = {
+        "current_names": [],
+        "historic_names": [],
+        "months": {},
+        "currencies": {},
+        "rates": {},
+    }
 
     def _read_balances(self) -> dict:
-        """Load balances.json; return default structure if absent."""
+        """Load balances.json; return default structure if absent. Migrates legacy schema."""
         path = self._dir / "balances.json"
         if not path.exists():
             return {k: list(v) if isinstance(v, list) else dict(v)
@@ -234,6 +244,11 @@ class Storage:
         result = {k: list(v) if isinstance(v, list) else dict(v)
                   for k, v in self._BALANCES_DEFAULT.items()}
         result.update(data)
+        # Migration: ensure every known name has a currency entry (default RUB).
+        currencies = result.setdefault("currencies", {})
+        for name in list(result.get("historic_names", [])) + list(result.get("current_names", [])):
+            currencies.setdefault(name, "RUB")
+        result.setdefault("rates", {})
         return result
 
     def _write_balances(self, data: dict) -> None:
@@ -251,14 +266,17 @@ class Storage:
         """Return all balance names ever recorded (historic_names)."""
         return self._read_balances()["historic_names"]
 
-    def add_balance_name(self, name: str) -> None:
+    def add_balance_name(self, name: str, currency: str = "RUB") -> None:
         """Add name to current_names (and historic_names if new). No-op if already current."""
+        if not _CURRENCY_RE.match(currency):
+            raise ValueError(f"Invalid currency code: {currency!r}")
         data = self._read_balances()
         if name in data["current_names"]:
             return
         data["current_names"].append(name)
         if name not in data["historic_names"]:
             data["historic_names"].append(name)
+        data["currencies"].setdefault(name, currency)
         self._write_balances(data)
 
     def remove_balance_name(self, name: str, keep_history: bool) -> None:
@@ -270,6 +288,7 @@ class Storage:
         if not keep_history:
             if name in data["historic_names"]:
                 data["historic_names"].remove(name)
+            data.get("currencies", {}).pop(name, None)
             for month in list(data["months"].keys()):
                 data["months"][month].pop(name, None)
                 if not data["months"][month]:
@@ -291,3 +310,57 @@ class Storage:
     def list_balance_months(self) -> list[str]:
         """All months with any balance data, sorted descending."""
         return sorted(self._read_balances()["months"].keys(), reverse=True)
+
+    # ── currencies / FX rates ────────────────────────────────────────────────
+
+    def get_balance_currency(self, name: str) -> str:
+        """Return the currency code stored for name (default 'RUB')."""
+        return self._read_balances()["currencies"].get(name, "RUB")
+
+    def set_balance_currency(self, name: str, ccy: str) -> None:
+        """Set currency for an existing balance name. Validates code."""
+        if not _CURRENCY_RE.match(ccy):
+            raise ValueError(f"Invalid currency code: {ccy!r}")
+        data = self._read_balances()
+        data["currencies"][name] = ccy
+        self._write_balances(data)
+
+    def get_all_currencies(self) -> dict:
+        """Return a copy of the name → currency map."""
+        return dict(self._read_balances()["currencies"])
+
+    def get_rate(self, ccy: str, month: str) -> Optional[float]:
+        """Return stored FX rate. RUB always returns 1.0. None if missing."""
+        if ccy == "RUB":
+            return 1.0
+        return self._read_balances()["rates"].get(ccy, {}).get(month)
+
+    def set_rate(self, ccy: str, month: str, value: float) -> None:
+        """Store FX rate for ccy in month. Validates code and positive float."""
+        if not _CURRENCY_RE.match(ccy):
+            raise ValueError(f"Invalid currency code: {ccy!r}")
+        if ccy == "RUB":
+            return  # RUB is implicit
+        if value <= 0:
+            raise ValueError(f"Rate must be positive: {value}")
+        data = self._read_balances()
+        data["rates"].setdefault(ccy, {})[month] = float(value)
+        self._write_balances(data)
+
+    def get_all_rates(self) -> dict:
+        """Return a deep copy of the rates dict."""
+        return {ccy: dict(months) for ccy, months in self._read_balances()["rates"].items()}
+
+    def list_missing_rates(self, month: str) -> list:
+        """Currencies that appear in balances for `month` with no stored rate."""
+        data = self._read_balances()
+        month_values = data["months"].get(month, {})
+        missing = []
+        for name in month_values:
+            ccy = data["currencies"].get(name, "RUB")
+            if ccy == "RUB":
+                continue
+            if month not in data["rates"].get(ccy, {}):
+                if ccy not in missing:
+                    missing.append(ccy)
+        return missing

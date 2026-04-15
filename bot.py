@@ -18,6 +18,7 @@ Requirements: Python 3.9+, python-telegram-bot v20+
 import difflib
 import io
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -79,6 +80,7 @@ def _income_field(record: tuple, month: str) -> dict:
 
 BALANCE_FUZZY_CUTOFF = 0.6
 BALANCE_FUZZY_MAX_MATCHES = 3
+BALANCE_QUICK_CURRENCIES = ("RUB", "USD", "EUR")
 
 
 def _format_balance_amount(amount: Optional[float]) -> str:
@@ -86,6 +88,30 @@ def _format_balance_amount(amount: Optional[float]) -> str:
     if amount is None:
         return "—"
     return str(int(amount)) if amount == int(amount) else str(amount)
+
+
+def _format_rub_total(amount: float) -> str:
+    """Format an RUB total with thin-space thousands separators and a ₽ suffix."""
+    whole = int(round(amount))
+    s = f"{whole:,}".replace(",", "\u202f")
+    return f"{s} ₽"
+
+
+def convert_to_rub(
+    amount: Optional[float],
+    ccy: str,
+    month: str,
+    rates: dict,
+) -> Optional[float]:
+    """Return amount converted to RUB, or None if the rate is missing."""
+    if amount is None:
+        return None
+    if ccy == "RUB":
+        return float(amount)
+    rate = rates.get(ccy, {}).get(month)
+    if rate is None:
+        return None
+    return float(amount) * float(rate)
 
 
 def _resolve_balance_name(input_name: str, current_names: list[str]) -> tuple[Optional[str], list[str]]:
@@ -114,26 +140,71 @@ def _resolve_balance_name(input_name: str, current_names: list[str]) -> tuple[Op
 
 def _build_balance_menu(
     month: str,
-    current_names: list[str],
-    month_values: dict[str, float],
-) -> tuple[str, InlineKeyboardMarkup]:
+    current_names: list,
+    month_values: dict,
+    currencies: Optional[dict] = None,
+    rates: Optional[dict] = None,
+) -> tuple:
     """
     Build the /balance main menu keyboard.
     month_values: {name: amount} for the current month (may be partial or empty).
+    currencies: {name: ccy} — missing names default to RUB.
+    rates: {ccy: {month: float}} — used to compute the footer total.
     Pure function — no I/O.
     """
-    text = f"Balances — {_month_label(month)}"
-    rows = []
-    rows.append([
+    currencies = currencies or {}
+    rates = rates or {}
+    lines = [f"Balances — {_month_label(month)}"]
+    rows = [[
         InlineKeyboardButton("＋ Add",    callback_data="balance_add"),
         InlineKeyboardButton("－ Remove", callback_data="balance_remove"),
-    ])
+        InlineKeyboardButton("⚙ Edit",    callback_data="balance_edit"),
+    ]]
+    total_rub = 0.0
+    missing = []
     for name in current_names:
         amount = month_values.get(name)
-        label = f"{name}: {_format_balance_amount(amount)}"
+        ccy = currencies.get(name, "RUB")
+        formatted = _format_balance_amount(amount)
+        if ccy == "RUB":
+            label = f"{name}: {formatted}"
+        else:
+            label = f"{name} ({ccy}): {formatted}"
         rows.append([InlineKeyboardButton(label, callback_data=f"balance_set:{name}")])
+        if amount is None:
+            continue
+        converted = convert_to_rub(amount, ccy, month, rates)
+        if converted is None:
+            if ccy not in missing:
+                missing.append(ccy)
+        else:
+            total_rub += converted
+    if current_names:
+        any_amount = any(month_values.get(n) is not None for n in current_names)
+        if any_amount:
+            if missing:
+                lines.append(
+                    f"Total: {_format_rub_total(total_rub)} "
+                    f"(partial — missing {', '.join(missing)} rate)"
+                )
+            else:
+                lines.append(f"Total: {_format_rub_total(total_rub)}")
     rows.append([InlineKeyboardButton("✓ Done", callback_data="balance_done")])
-    return text, InlineKeyboardMarkup(rows)
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def _build_currency_picker(name: str) -> tuple:
+    """Build the currency picker keyboard for `name`. Pure function."""
+    text = f'Currency for "{name}"?'
+    row = [
+        InlineKeyboardButton(c, callback_data=f"balance_ccy_pick:{name}:{c}")
+        for c in BALANCE_QUICK_CURRENCIES
+    ]
+    markup = InlineKeyboardMarkup([
+        row,
+        [InlineKeyboardButton("＋ Other", callback_data=f"balance_ccy_other:{name}")],
+    ])
+    return text, markup
 
 
 def _build_balance_remove_confirm(name: str) -> tuple[str, InlineKeyboardMarkup]:
@@ -148,24 +219,47 @@ def _build_balance_remove_confirm(name: str) -> tuple[str, InlineKeyboardMarkup]
 
 
 def render_balance_report(
-    months: list[str],
-    historic_names: list[str],
-    month_data: dict[str, dict[str, float]],
+    months: list,
+    historic_names: list,
+    month_data: dict,
     separator: str = "\t",
-) -> list[str]:
+    currencies: Optional[dict] = None,
+    rates: Optional[dict] = None,
+) -> list:
     """
     Render a balance report as a list of separator-joined strings.
-    First element is the header row. Months in the order given (caller sorts).
-    Missing values produce empty cells. Pure function.
+    First element is the header row (includes trailing 'Total RUB' column).
+    Months in the order given (caller sorts). Missing native values render
+    as empty cells. Total cells render '?' when any non-RUB balance in the
+    month has no stored rate. Pure function.
     """
-    header = separator.join(["month"] + historic_names)
+    currencies = currencies or {}
+    rates = rates or {}
+    header = separator.join(["month"] + list(historic_names) + ["Total RUB"])
     rows = [header]
     for month in months:
         values = month_data.get(month, {})
-        cells = [month] + [
-            _format_balance_amount(values.get(name)) if name in values else ""
-            for name in historic_names
-        ]
+        cells = [month]
+        total = 0.0
+        partial = False
+        for name in historic_names:
+            if name in values:
+                cells.append(_format_balance_amount(values.get(name)))
+            else:
+                cells.append("")
+        for name, amount in values.items():
+            ccy = currencies.get(name, "RUB")
+            converted = convert_to_rub(amount, ccy, month, rates)
+            if converted is None:
+                partial = True
+            else:
+                total += converted
+        if partial:
+            cells.append("?")
+        elif not values:
+            cells.append("")
+        else:
+            cells.append(_format_balance_amount(total))
         rows.append(separator.join(cells))
     return rows
 
@@ -478,9 +572,7 @@ async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Menu form: /balance
     month = store.get_current_month()
-    month_values = store.get_balance_month(month)
-    current_names = store.get_balance_names()
-    text, markup = _build_balance_menu(month, current_names, month_values)
+    text, markup = _build_balance_menu_from_store(store, month)
     msg = await update.message.reply_text(text, reply_markup=markup)
     ctx.user_data["balance"] = {
         "awaiting": None, "pending_amount": None,
@@ -566,8 +658,12 @@ async def cb_report_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
             return
         historic_names = store.get_historic_names()
         month_data = {m: store.get_balance_month(m) for m in months}
-        tab_lines  = render_balance_report(months, historic_names, month_data, separator="\t")
-        semi_lines = render_balance_report(months, historic_names, month_data, separator=";")
+        currencies = store.get_all_currencies()
+        rates = store.get_all_rates()
+        tab_lines  = render_balance_report(months, historic_names, month_data,
+                                           separator="\t", currencies=currencies, rates=rates)
+        semi_lines = render_balance_report(months, historic_names, month_data,
+                                           separator=";",  currencies=currencies, rates=rates)
         tab_report  = "\n".join(tab_lines)
         semi_report = "\n".join(semi_lines)
         buttons = []
@@ -773,11 +869,21 @@ async def cb_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── balance callbacks ─────────────────────────────────────────────────────────
 
-async def _render_balance_menu_on_query(query, store: Storage) -> None:
+def _build_balance_menu_from_store(store: "Storage", month: str) -> tuple:
+    """Assemble `_build_balance_menu` args from the store."""
+    return _build_balance_menu(
+        month,
+        store.get_balance_names(),
+        store.get_balance_month(month),
+        store.get_all_currencies(),
+        store.get_all_rates(),
+    )
+
+
+async def _render_balance_menu_on_query(query, store: "Storage") -> None:
     """Re-render the balance menu on an existing query message."""
     month = store.get_current_month()
-    month_values = store.get_balance_month(month)
-    text, markup = _build_balance_menu(month, store.get_balance_names(), month_values)
+    text, markup = _build_balance_menu_from_store(store, month)
     await query.edit_message_text(text, reply_markup=markup)
 
 
@@ -790,7 +896,10 @@ async def cb_balance_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     state = ctx.user_data.get("balance", {})
     amount = state.get("pending_amount")
     month = store.get_current_month()
-    store.set_balance(month, name, amount)
+    status, prompt = await _commit_balance_with_rate_check(store, ctx, month, name, amount)
+    if status == "rate_prompt":
+        await query.edit_message_text(prompt)
+        return
     ctx.user_data.pop("balance", None)
     await query.edit_message_text(
         f"✅ *{name}*: {_format_balance_amount(amount)} ({_month_label(month)})",
@@ -884,6 +993,70 @@ async def cb_balance_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     await query.answer()
     store: Storage = ctx.bot_data["store"]
     await _render_balance_menu_on_query(query, store)
+
+
+async def cb_balance_ccy_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User tapped a currency quick-button (RUB/USD/EUR)."""
+    query = update.callback_query
+    await query.answer()
+    _, name, ccy = query.data.split(":", 2)
+    store: Storage = ctx.bot_data["store"]
+    state = ctx.user_data.get("balance", {}) or {}
+    edit_mode = state.get("edit")
+    if edit_mode:
+        store.set_balance_currency(name, ccy)
+        ctx.user_data.pop("balance", None)
+        await _render_balance_menu_on_query(query, store)
+        return
+    # Creation path
+    store.add_balance_name(name, currency=ccy)
+    pending_amount = state.get("pending_amount")
+    month = store.get_current_month()
+    if pending_amount is not None:
+        status, prompt = await _commit_balance_with_rate_check(
+            store, ctx, month, name, pending_amount
+        )
+        if status == "rate_prompt":
+            await query.edit_message_text(prompt)
+            return
+    ctx.user_data.pop("balance", None)
+    await _render_balance_menu_on_query(query, store)
+
+
+async def cb_balance_ccy_other(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User tapped ＋ Other — prompt for a free-text 3-letter code."""
+    query = update.callback_query
+    await query.answer()
+    name = query.data.split(":", 1)[1]
+    state = ctx.user_data.setdefault("balance", {})
+    state["awaiting"] = "balance_currency"
+    state["pending_name"] = name
+    await query.edit_message_text(f"Enter 3-letter currency code for \"{name}\":")
+
+
+async def cb_balance_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User tapped ⚙ Edit — show list of balances to edit currency."""
+    query = update.callback_query
+    await query.answer()
+    store: Storage = ctx.bot_data["store"]
+    names = store.get_balance_names()
+    if not names:
+        await query.answer("No balances to edit.", show_alert=True)
+        return
+    rows = [[InlineKeyboardButton(n, callback_data=f"balance_edit_pick:{n}")] for n in names]
+    rows.append([InlineKeyboardButton("← Back", callback_data="balance_back")])
+    await query.edit_message_text("Select balance to edit currency:",
+                                  reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def cb_balance_edit_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User picked a balance to edit — show currency picker in edit mode."""
+    query = update.callback_query
+    await query.answer()
+    name = query.data.split(":", 1)[1]
+    ctx.user_data["balance"] = {"awaiting": "pick_currency", "pending_name": name, "edit": True}
+    text, markup = _build_currency_picker(name)
+    await query.edit_message_text(text, reply_markup=markup)
 
 
 async def cb_balance_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -987,7 +1160,12 @@ async def cb_balance_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         return
     historic_names = store.get_historic_names()
     month_data = {m: store.get_balance_month(m) for m in months}
-    lines = render_balance_report(months, historic_names, month_data, separator="\t")
+    lines = render_balance_report(
+        months, historic_names, month_data,
+        separator="\t",
+        currencies=store.get_all_currencies(),
+        rates=store.get_all_rates(),
+    )
     tsv_bytes = "\n".join(lines).encode("utf-8")
     await query.message.reply_document(
         document=io.BytesIO(tsv_bytes),
@@ -1014,6 +1192,33 @@ async def _record_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
     )
 
 
+async def _commit_balance_with_rate_check(
+    store: "Storage",
+    ctx: ContextTypes.DEFAULT_TYPE,
+    month: str,
+    name: str,
+    amount: float,
+):
+    """
+    Try to commit a balance. If its currency has no stored rate for `month`,
+    stash pending state and return a ("rate_prompt", text) tuple so the caller
+    can message the user. Otherwise commit and return ("done", None).
+    """
+    ccy = store.get_balance_currency(name)
+    if ccy != "RUB" and store.get_rate(ccy, month) is None:
+        ctx.user_data["balance"] = {
+            "awaiting": "rate",
+            "pending": {"month": month, "name": name, "amount": amount, "ccy": ccy},
+        }
+        text = (
+            f"Enter FX rate for {ccy} in {_month_label(month)}:\n"
+            f"1 {ccy} = ? RUB"
+        )
+        return "rate_prompt", text
+    store.set_balance(month, name, amount)
+    return "done", None
+
+
 async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle free-text replies during balance awaiting flows."""
     state = ctx.user_data.get("balance", {})
@@ -1029,10 +1234,12 @@ async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
             return
         name = state["pending_name"]
         month = store.get_current_month()
-        store.set_balance(month, name, amount)
+        status, prompt = await _commit_balance_with_rate_check(store, ctx, month, name, amount)
+        if status == "rate_prompt":
+            await update.message.reply_text(prompt)
+            return
         ctx.user_data.pop("balance", None)
-        month_values = store.get_balance_month(month)
-        menu_text, markup = _build_balance_menu(month, store.get_balance_names(), month_values)
+        menu_text, markup = _build_balance_menu_from_store(store, month)
         await update.message.reply_text(
             f"✅ {name}: {_format_balance_amount(amount)}\n\n{menu_text}",
             reply_markup=markup,
@@ -1042,17 +1249,72 @@ async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
         if not text:
             await update.message.reply_text("❌ Name cannot be empty.")
             return
-        store.add_balance_name(text)
         pending_amount = state.get("pending_amount")
+        # Stash the name and show currency picker before committing anything.
+        ctx.user_data["balance"] = {
+            "awaiting": "pick_currency",
+            "pending_name": text,
+            "pending_amount": pending_amount,
+        }
+        picker_text, markup = _build_currency_picker(text)
+        await update.message.reply_text(picker_text, reply_markup=markup)
+
+    elif awaiting == "balance_currency":
+        ccy = text.strip().upper()
+        if not re.match(r"^[A-Z]{3}$", ccy):
+            await update.message.reply_text("❌ Currency must be a 3-letter code (e.g. USD).")
+            return
+        name = state.get("pending_name")
+        pending_amount = state.get("pending_amount")
+        edit_mode = state.get("edit")
+        if edit_mode:
+            store.set_balance_currency(name, ccy)
+            ctx.user_data.pop("balance", None)
+            month = store.get_current_month()
+            menu_text, markup = _build_balance_menu_from_store(store, month)
+            await update.message.reply_text(
+                f"✅ {name}: currency set to {ccy}\n\n{menu_text}",
+                reply_markup=markup,
+            )
+            return
+        store.add_balance_name(name, currency=ccy)
         month = store.get_current_month()
         if pending_amount is not None:
-            store.set_balance(month, text, pending_amount)
+            status, prompt = await _commit_balance_with_rate_check(
+                store, ctx, month, name, pending_amount
+            )
+            if status == "rate_prompt":
+                await update.message.reply_text(prompt)
+                return
         ctx.user_data.pop("balance", None)
-        month_values = store.get_balance_month(month)
-        menu_text, markup = _build_balance_menu(month, store.get_balance_names(), month_values)
+        menu_text, markup = _build_balance_menu_from_store(store, month)
         await update.message.reply_text(
-            f"✅ Added *{text}*.\n\n{menu_text}",
+            f"✅ Added *{name}* ({ccy}).\n\n{menu_text}",
             parse_mode="Markdown",
+            reply_markup=markup,
+        )
+
+    elif awaiting == "rate":
+        try:
+            rate = float(text)
+        except ValueError:
+            await update.message.reply_text("❌ Please enter a positive number.")
+            return
+        if rate <= 0:
+            await update.message.reply_text("❌ Rate must be positive.")
+            return
+        pending = state.get("pending", {})
+        month = pending["month"]
+        name = pending["name"]
+        amount = pending["amount"]
+        ccy = pending["ccy"]
+        store.set_rate(ccy, month, rate)
+        store.set_balance(month, name, amount)
+        ctx.user_data.pop("balance", None)
+        menu_text, markup = _build_balance_menu_from_store(store, month)
+        await update.message.reply_text(
+            f"✅ Rate saved: 1 {ccy} = {rate} RUB\n"
+            f"✅ {name}: {_format_balance_amount(amount)}\n\n{menu_text}",
             reply_markup=markup,
         )
 
@@ -1244,6 +1506,10 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_balance_back,          pattern=r"^balance_back$"))
     app.add_handler(CallbackQueryHandler(cb_balance_done,          pattern=r"^balance_done$"))
     app.add_handler(CallbackQueryHandler(cb_balance_tsv,           pattern=r"^balance_tsv$"))
+    app.add_handler(CallbackQueryHandler(cb_balance_ccy_pick,      pattern=r"^balance_ccy_pick:"))
+    app.add_handler(CallbackQueryHandler(cb_balance_ccy_other,     pattern=r"^balance_ccy_other:"))
+    app.add_handler(CallbackQueryHandler(cb_balance_edit,          pattern=r"^balance_edit$"))
+    app.add_handler(CallbackQueryHandler(cb_balance_edit_pick,     pattern=r"^balance_edit_pick:"))
 
     # Payment messages (any non-command text)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payment))

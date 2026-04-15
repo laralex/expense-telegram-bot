@@ -479,7 +479,7 @@ def test_render_balance_report_header_row():
         month_data={"2026-03": {"Savings": 5000.0}},
         separator="\t",
     )
-    assert lines[0] == "month\tSavings\tChecking"
+    assert lines[0] == "month\tSavings\tChecking\tTotal RUB"
 
 
 def test_render_balance_report_data_row_with_value():
@@ -489,7 +489,7 @@ def test_render_balance_report_data_row_with_value():
         month_data={"2026-03": {"Savings": 5000.0}},
         separator="\t",
     )
-    assert lines[1] == "2026-03\t5000"
+    assert lines[1] == "2026-03\t5000\t5000"
 
 
 def test_render_balance_report_missing_value_is_empty():
@@ -499,7 +499,7 @@ def test_render_balance_report_missing_value_is_empty():
         month_data={"2026-03": {"Savings": 5000.0}},
         separator="\t",
     )
-    assert lines[1] == "2026-03\t5000\t"
+    assert lines[1] == "2026-03\t5000\t\t5000"
 
 
 def test_render_balance_report_semicolon_separator():
@@ -509,7 +509,32 @@ def test_render_balance_report_semicolon_separator():
         month_data={"2026-03": {"Savings": 1200.0}},
         separator=";",
     )
-    assert lines[1] == "2026-03;1200"
+    assert lines[1] == "2026-03;1200;1200"
+
+
+def test_render_balance_report_total_rub_with_mixed_currencies():
+    lines = render_balance_report(
+        months=["2026-03"],
+        historic_names=["Savings", "Revolut"],
+        month_data={"2026-03": {"Savings": 1000.0, "Revolut": 100.0}},
+        separator="\t",
+        currencies={"Savings": "RUB", "Revolut": "USD"},
+        rates={"USD": {"2026-03": 92.0}},
+    )
+    # 1000 + 100*92 = 10200
+    assert lines[1].endswith("\t10200")
+
+
+def test_render_balance_report_missing_rate_partial():
+    lines = render_balance_report(
+        months=["2026-03"],
+        historic_names=["Revolut"],
+        month_data={"2026-03": {"Revolut": 100.0}},
+        separator="\t",
+        currencies={"Revolut": "USD"},
+        rates={},
+    )
+    assert lines[1].endswith("\t?")
 
 
 def test_render_balance_report_multiple_months_order_preserved():
@@ -528,7 +553,117 @@ def test_render_balance_report_multiple_months_order_preserved():
 
 def test_render_balance_report_empty_returns_header_only():
     lines = render_balance_report([], ["Savings"], {}, separator="\t")
-    assert lines == ["month\tSavings"]
+    assert lines == ["month\tSavings\tTotal RUB"]
+
+
+def test_convert_to_rub_rub_shortcut():
+    from bot import convert_to_rub
+    assert convert_to_rub(1000.0, "RUB", "2026-03", {}) == 1000.0
+
+
+def test_convert_to_rub_usd_conversion():
+    from bot import convert_to_rub
+    assert convert_to_rub(100.0, "USD", "2026-03", {"USD": {"2026-03": 92.0}}) == 9200.0
+
+
+def test_convert_to_rub_missing_rate_is_none():
+    from bot import convert_to_rub
+    assert convert_to_rub(100.0, "USD", "2026-03", {}) is None
+
+
+def test_balance_menu_row_label_includes_currency():
+    _, markup = _build_balance_menu(
+        "2026-03",
+        ["Revolut"],
+        {"Revolut": 100.0},
+        currencies={"Revolut": "USD"},
+        rates={"USD": {"2026-03": 92.0}},
+    )
+    labels = [btn.text for row in markup.inline_keyboard for btn in row]
+    assert any("Revolut (USD): 100" in lbl for lbl in labels)
+
+
+def test_balance_menu_footer_shows_total():
+    text, _ = _build_balance_menu(
+        "2026-03",
+        ["Savings"],
+        {"Savings": 5000.0},
+        currencies={"Savings": "RUB"},
+        rates={},
+    )
+    assert "Total:" in text and "5" in text
+
+
+def test_balance_menu_footer_partial_when_rate_missing():
+    text, _ = _build_balance_menu(
+        "2026-03",
+        ["Revolut"],
+        {"Revolut": 100.0},
+        currencies={"Revolut": "USD"},
+        rates={},
+    )
+    assert "partial" in text
+    assert "USD" in text
+
+
+def test_balance_menu_no_footer_when_empty():
+    text, _ = _build_balance_menu("2026-03", [], {})
+    assert "Total:" not in text
+
+
+def test_balance_menu_no_footer_when_no_values():
+    text, _ = _build_balance_menu("2026-03", ["Savings"], {})
+    assert "Total:" not in text
+
+
+def test_balance_menu_has_edit_button():
+    _, markup = _build_balance_menu("2026-03", ["Savings"], {})
+    cbs = _balance_menu_cb(markup)
+    assert "balance_edit" in cbs
+
+
+# ── auto-prompt state machine ────────────────────────────────────────────────
+
+class _FakeCtx:
+    def __init__(self):
+        self.user_data = {}
+
+
+def test_commit_balance_with_rate_check_prompts_when_rate_missing(tmp_path):
+    import asyncio
+    from storage import Storage
+    from bot import _commit_balance_with_rate_check
+    s = Storage(data_dir=str(tmp_path))
+    s.add_balance_name("Revolut", currency="USD")
+    ctx = _FakeCtx()
+    status, prompt = asyncio.get_event_loop().run_until_complete(
+        _commit_balance_with_rate_check(s, ctx, "2026-03", "Revolut", 100.0)
+    )
+    assert status == "rate_prompt"
+    assert "USD" in prompt
+    state = ctx.user_data["balance"]
+    assert state["awaiting"] == "rate"
+    assert state["pending"] == {
+        "month": "2026-03", "name": "Revolut", "amount": 100.0, "ccy": "USD"
+    }
+    # Balance not committed yet.
+    assert s.get_balance_month("2026-03") == {}
+
+
+def test_commit_balance_with_rate_check_commits_when_rate_present(tmp_path):
+    import asyncio
+    from storage import Storage
+    from bot import _commit_balance_with_rate_check
+    s = Storage(data_dir=str(tmp_path))
+    s.add_balance_name("Revolut", currency="USD")
+    s.set_rate("USD", "2026-03", 92.0)
+    ctx = _FakeCtx()
+    status, prompt = asyncio.get_event_loop().run_until_complete(
+        _commit_balance_with_rate_check(s, ctx, "2026-03", "Revolut", 100.0)
+    )
+    assert status == "done"
+    assert prompt is None
+    assert s.get_balance_month("2026-03") == {"Revolut": 100.0}
 
 
 # ── report type keyboard (updated for balance) ────────────────────────────────

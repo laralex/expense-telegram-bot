@@ -427,3 +427,103 @@ def test_list_balance_months_sorted_descending(tmp_store):
 
 def test_list_balance_months_empty_when_no_data(tmp_store):
     assert tmp_store.list_balance_months() == []
+
+
+# ── currencies & FX rates ─────────────────────────────────────────────────────
+
+def test_default_currency_is_rub(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    assert tmp_store.get_balance_currency("Savings") == "RUB"
+
+
+def test_add_balance_name_accepts_currency(tmp_store):
+    tmp_store.add_balance_name("Revolut", currency="USD")
+    assert tmp_store.get_balance_currency("Revolut") == "USD"
+
+
+def test_set_balance_currency_roundtrip(tmp_store):
+    tmp_store.add_balance_name("Revolut")
+    tmp_store.set_balance_currency("Revolut", "EUR")
+    assert tmp_store.get_balance_currency("Revolut") == "EUR"
+
+
+def test_set_balance_currency_rejects_lowercase(tmp_store):
+    tmp_store.add_balance_name("Revolut")
+    with pytest.raises(ValueError):
+        tmp_store.set_balance_currency("Revolut", "usd")
+
+
+def test_set_balance_currency_rejects_wrong_length(tmp_store):
+    tmp_store.add_balance_name("Revolut")
+    with pytest.raises(ValueError):
+        tmp_store.set_balance_currency("Revolut", "EURO")
+
+
+def test_get_rate_rub_is_one(tmp_store):
+    assert tmp_store.get_rate("RUB", "2026-03") == 1.0
+
+
+def test_set_and_get_rate(tmp_store):
+    tmp_store.set_rate("USD", "2026-03", 92.5)
+    assert tmp_store.get_rate("USD", "2026-03") == 92.5
+
+
+def test_get_rate_missing_returns_none(tmp_store):
+    assert tmp_store.get_rate("USD", "2026-03") is None
+
+
+def test_set_rate_rejects_non_positive(tmp_store):
+    with pytest.raises(ValueError):
+        tmp_store.set_rate("USD", "2026-03", 0)
+
+
+def test_set_rate_rub_noop(tmp_store):
+    tmp_store.set_rate("RUB", "2026-03", 5.0)  # silent no-op
+    assert tmp_store.get_rate("RUB", "2026-03") == 1.0
+
+
+def test_list_missing_rates_empty_when_all_rub(tmp_store):
+    tmp_store.add_balance_name("Savings")
+    tmp_store.set_balance("2026-03", "Savings", 5000.0)
+    assert tmp_store.list_missing_rates("2026-03") == []
+
+
+def test_list_missing_rates_returns_unused_currencies(tmp_store):
+    tmp_store.add_balance_name("Revolut", currency="USD")
+    tmp_store.set_balance("2026-03", "Revolut", 100.0)
+    assert tmp_store.list_missing_rates("2026-03") == ["USD"]
+
+
+def test_list_missing_rates_omits_when_rate_set(tmp_store):
+    tmp_store.add_balance_name("Revolut", currency="USD")
+    tmp_store.set_balance("2026-03", "Revolut", 100.0)
+    tmp_store.set_rate("USD", "2026-03", 92.0)
+    assert tmp_store.list_missing_rates("2026-03") == []
+
+
+def test_legacy_schema_migrates_to_rub(tmp_path):
+    legacy = {
+        "current_names": ["Savings"],
+        "historic_names": ["Savings"],
+        "months": {"2026-03": {"Savings": 5000.0}},
+    }
+    (tmp_path / "balances.json").write_text(json.dumps(legacy), encoding="utf-8")
+    s = Storage(data_dir=str(tmp_path))
+    assert s.get_balance_currency("Savings") == "RUB"
+    # write cycle persists new schema
+    s.set_balance("2026-03", "Savings", 6000.0)
+    reloaded = json.loads((tmp_path / "balances.json").read_text())
+    assert reloaded["currencies"]["Savings"] == "RUB"
+    assert "rates" in reloaded
+
+
+def test_remove_balance_delete_history_removes_currency(tmp_store):
+    tmp_store.add_balance_name("Revolut", currency="USD")
+    tmp_store.remove_balance_name("Revolut", keep_history=False)
+    assert "Revolut" not in tmp_store.get_all_currencies()
+
+
+def test_remove_balance_keep_history_keeps_currency(tmp_store):
+    tmp_store.add_balance_name("Revolut", currency="USD")
+    tmp_store.remove_balance_name("Revolut", keep_history=True)
+    assert tmp_store.get_all_currencies().get("Revolut") == "USD"
