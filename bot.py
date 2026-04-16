@@ -19,6 +19,7 @@ import difflib
 import io
 import os
 import re
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -1526,29 +1527,21 @@ async def cb_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
     elif export_type == "all":
-        expenses_tsv = _build_all_expenses_tsv(store)
-        income_tsv = _build_all_income_tsv(store)
-        balances_tsv = await _build_all_balances_tsv(store)
-        if not expenses_tsv and not income_tsv and not balances_tsv:
+        data_dir = Path(store._dir)
+        files = sorted(data_dir.iterdir()) if data_dir.is_dir() else []
+        files = [f for f in files if f.is_file()]
+        if not files:
             await query.edit_message_text("No data to export.")
             return
-        sent = 0
         await query.edit_message_text("Exporting all data...")
-        if expenses_tsv:
-            await query.message.reply_document(
-                document=io.BytesIO(expenses_tsv), filename="expenses.tsv",
-            )
-            sent += 1
-        if income_tsv:
-            await query.message.reply_document(
-                document=io.BytesIO(income_tsv), filename="income.tsv",
-            )
-            sent += 1
-        if balances_tsv:
-            await query.message.reply_document(
-                document=io.BytesIO(balances_tsv), filename="balances.tsv",
-            )
-            sent += 1
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in files:
+                zf.write(f, arcname=f"data/{f.name}")
+        buf.seek(0)
+        await query.message.reply_document(
+            document=buf, filename="backup.zip",
+        )
 
 
 # ── settings handlers ─────────────────────────────────────────────────────────

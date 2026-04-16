@@ -32,6 +32,9 @@ sudo python3 -m venv "$VENV"
 echo "==> Installing dependencies"
 sudo "$VENV/bin/pip" install --quiet -r "$DEPLOY_DIR/requirements.txt"
 
+echo "==> Verifying installed packages satisfy requirements"
+sudo "$VENV/bin/pip" check
+
 echo "==> Updating service ExecStart to use venv python"
 sudo sed -i "s|^ExecStart=.*|ExecStart=$VENV/bin/python bot.py|" "$DEPLOY_DIR/$SERVICE_FILE"
 
