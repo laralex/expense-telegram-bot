@@ -10,6 +10,8 @@ from bot import (
     _format_erase_preview, _build_report_type_keyboard, _build_erase_keyboard,
     _format_balance_amount, _resolve_balance_name, _build_balance_menu,
     _build_balance_remove_confirm, render_balance_report,
+    _build_all_expenses_tsv, _build_all_income_tsv, _build_all_balances_tsv,
+    _format_ccy_amount,
 )
 
 REPORT_COLUMNS = {
@@ -672,3 +674,125 @@ def test_report_type_keyboard_has_balances_button():
     _, markup = _build_report_type_keyboard()
     all_data = [btn.callback_data for row in markup.inline_keyboard for btn in row if btn.callback_data]
     assert "report_type:balance" in all_data
+
+
+# ── _build_all_expenses_tsv ──────────────────────────────────────────────────
+
+def test_build_all_expenses_tsv_empty(tmp_path):
+    from storage import Storage
+    s = Storage(data_dir=str(tmp_path))
+    assert _build_all_expenses_tsv(s) is None
+
+
+def test_build_all_expenses_tsv_single_month(tmp_path):
+    from storage import Storage
+    s = Storage(data_dir=str(tmp_path))
+    s.append_record("2026-03", "F", 100.0, "Groceries")
+    s.append_record("2026-03", "taxi", 50.0, "Uber")
+    result = _build_all_expenses_tsv(s)
+    assert result is not None
+    lines = result.decode("utf-8").split("\n")
+    assert len(lines) == 2
+    assert "Groceries" in lines[0]
+    assert "Uber" in lines[1]
+
+
+def test_build_all_expenses_tsv_multiple_months_chronological(tmp_path):
+    from storage import Storage
+    s = Storage(data_dir=str(tmp_path))
+    s.append_record("2026-03", "F", 100.0, "March item")
+    s.append_record("2026-01", "F", 200.0, "January item")
+    s.append_record("2026-02", "F", 150.0, "February item")
+    result = _build_all_expenses_tsv(s)
+    lines = result.decode("utf-8").split("\n")
+    assert len(lines) == 3
+    assert "January item" in lines[0]
+    assert "February item" in lines[1]
+    assert "March item" in lines[2]
+
+
+# ── _build_all_income_tsv ────────────────────────────────────────────────────
+
+def test_build_all_income_tsv_empty(tmp_path):
+    from storage import Storage
+    s = Storage(data_dir=str(tmp_path))
+    assert _build_all_income_tsv(s) is None
+
+
+def test_build_all_income_tsv_single_month(tmp_path):
+    from storage import Storage
+    s = Storage(data_dir=str(tmp_path))
+    s.append_income("2026-03", 5000.0, True, "Salary")
+    result = _build_all_income_tsv(s)
+    assert result is not None
+    lines = result.decode("utf-8").split("\n")
+    assert len(lines) == 1
+    assert "5000" in lines[0]
+    assert "Salary" in lines[0]
+
+
+def test_build_all_income_tsv_multiple_months_chronological(tmp_path):
+    from storage import Storage
+    s = Storage(data_dir=str(tmp_path))
+    s.append_income("2026-03", 5000.0, True, "March salary")
+    s.append_income("2026-01", 4000.0, True, "January salary")
+    result = _build_all_income_tsv(s)
+    lines = result.decode("utf-8").split("\n")
+    assert len(lines) == 2
+    # January should come first (chronological)
+    assert "January salary" in lines[0]
+    assert "March salary" in lines[1]
+
+
+# ── _build_all_balances_tsv ──────────────────────────────────────────────────
+
+def test_build_all_balances_tsv_empty(tmp_path):
+    from storage import Storage
+    s = Storage(data_dir=str(tmp_path))
+    assert _build_all_balances_tsv(s) is None
+
+
+def test_build_all_balances_tsv_with_data(tmp_path):
+    from storage import Storage
+    s = Storage(data_dir=str(tmp_path))
+    s.add_balance_name("Savings")
+    s.set_balance("2026-03", "Savings", 5000.0)
+    s.set_balance("2026-02", "Savings", 4800.0)
+    result = _build_all_balances_tsv(s)
+    assert result is not None
+    lines = result.decode("utf-8").split("\n")
+    assert len(lines) == 3  # header + 2 months
+    assert "month" in lines[0]  # header
+    # Chronological: 2026-02 first, then 2026-03
+    assert "2026-02" in lines[1]
+    assert "2026-03" in lines[2]
+
+
+# ── _format_ccy_amount ───────────────────────────────────────────────────────
+
+def test_format_ccy_amount_rub():
+    assert _format_ccy_amount(150000, "RUB") == "150\u202f000 ₽"
+
+
+def test_format_ccy_amount_usd():
+    assert _format_ccy_amount(5000, "USD") == "$5\u202f000"
+
+
+def test_format_ccy_amount_eur():
+    assert _format_ccy_amount(2000, "EUR") == "€2\u202f000"
+
+
+def test_format_ccy_amount_gbp():
+    assert _format_ccy_amount(1000, "GBP") == "£1\u202f000"
+
+
+def test_format_ccy_amount_exotic():
+    assert _format_ccy_amount(3000, "CHF") == "CHF 3\u202f000"
+
+
+def test_format_ccy_amount_fractional():
+    assert _format_ccy_amount(1234.5, "USD") == "$1\u202f234.5"
+
+
+def test_format_ccy_amount_none():
+    assert _format_ccy_amount(None, "USD") == "—"

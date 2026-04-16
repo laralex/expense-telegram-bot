@@ -97,6 +97,33 @@ def _format_rub_total(amount: float) -> str:
     return f"{s} ₽"
 
 
+_CCY_SIGNS = {"RUB": "₽", "USD": "$", "EUR": "€", "GBP": "£"}
+
+
+def _format_ccy_amount(amount: Optional[float], ccy: str) -> str:
+    """Format a monetary amount with its currency sign.
+
+    RUB: '150 000 ₽' (suffix). USD/EUR/GBP: '$5 000' (prefix).
+    Other: 'CHF 5 000' (code prefix). None -> '—'.
+    Uses thin-space thousands separators.
+    """
+    if amount is None:
+        return "—"
+    whole = int(amount) if amount == int(amount) else amount
+    if isinstance(whole, int):
+        formatted = "{:,}".format(whole).replace(",", "\u202f")
+    else:
+        int_part = int(amount)
+        frac = str(amount).split(".")[1]
+        formatted = "{:,}".format(int_part).replace(",", "\u202f") + "." + frac
+    sign = _CCY_SIGNS.get(ccy)
+    if sign is None:
+        return "{} {}".format(ccy, formatted)
+    if ccy == "RUB":
+        return "{} {}".format(formatted, sign)
+    return "{}{}".format(sign, formatted)
+
+
 def convert_to_rub(
     amount: Optional[float],
     ccy: str,
@@ -477,6 +504,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/erase — menu to delete individual records (expenses or income)\n"
         "/erase N — delete last N expense records\n"
         "/balance — manage account balances\n"
+        "/export — export all data as TSV files\n"
         "/month — change active month\n"
         "/settings — change bot settings\n",
         parse_mode="Markdown",
@@ -1335,6 +1363,129 @@ async def cmd_out(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await _record_payment(update, ctx, args[1].strip())
 
 
+# ── export handlers ──────────────────────────────────────────────────────────
+
+async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Expenses", callback_data="export:expenses"),
+        InlineKeyboardButton("Income",   callback_data="export:income"),
+    ], [
+        InlineKeyboardButton("Balances", callback_data="export:balances"),
+        InlineKeyboardButton("All",      callback_data="export:all"),
+    ]])
+    await update.message.reply_text("Export all data as TSV:", reply_markup=keyboard)
+
+
+def _build_all_expenses_tsv(store: Storage) -> Optional[bytes]:
+    """Build a TSV with all expenses across all months, chronologically."""
+    months_with_counts = store.list_months_with_counts()
+    if not months_with_counts:
+        return None
+    fmt = store.get_format("expense")
+    all_lines = []  # type: list[str]
+    for month, _count in sorted(months_with_counts, key=lambda x: x[0]):
+        records = store.read_month(month)
+        all_lines.extend(render_rows(records, fmt, _expense_field, separator="\t"))
+    if not all_lines:
+        return None
+    return "\n".join(all_lines).encode("utf-8")
+
+
+def _build_all_income_tsv(store: Storage) -> Optional[bytes]:
+    """Build a TSV with all income across all months, chronologically."""
+    months = store.list_income_months()
+    if not months:
+        return None
+    fmt = store.get_format("income")
+    all_lines = []  # type: list[str]
+    for month in sorted(months):
+        records = store.read_income(month)
+        all_lines.extend(
+            render_rows(records, fmt, lambda rec, m=month: _income_field(rec, m), separator="\t")
+        )
+    if not all_lines:
+        return None
+    return "\n".join(all_lines).encode("utf-8")
+
+
+def _build_all_balances_tsv(store: Storage) -> Optional[bytes]:
+    """Build a TSV with all balance data, chronologically."""
+    months = store.list_balance_months()
+    if not months:
+        return None
+    historic_names = store.get_historic_names()
+    month_data = {m: store.get_balance_month(m) for m in months}
+    lines = render_balance_report(
+        sorted(months), historic_names, month_data,
+        separator="\t",
+        currencies=store.get_all_currencies(),
+        rates=store.get_all_rates(),
+    )
+    return "\n".join(lines).encode("utf-8")
+
+
+async def cb_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    export_type = query.data.split(":")[1]
+    store = ctx.bot_data["store"]  # type: Storage
+
+    if export_type == "expenses":
+        tsv = _build_all_expenses_tsv(store)
+        if not tsv:
+            await query.edit_message_text("No expense data to export.")
+            return
+        await query.edit_message_text("Exporting expenses...")
+        await query.message.reply_document(
+            document=io.BytesIO(tsv), filename="expenses.tsv",
+        )
+
+    elif export_type == "income":
+        tsv = _build_all_income_tsv(store)
+        if not tsv:
+            await query.edit_message_text("No income data to export.")
+            return
+        await query.edit_message_text("Exporting income...")
+        await query.message.reply_document(
+            document=io.BytesIO(tsv), filename="income.tsv",
+        )
+
+    elif export_type == "balances":
+        tsv = _build_all_balances_tsv(store)
+        if not tsv:
+            await query.edit_message_text("No balance data to export.")
+            return
+        await query.edit_message_text("Exporting balances...")
+        await query.message.reply_document(
+            document=io.BytesIO(tsv), filename="balances.tsv",
+        )
+
+    elif export_type == "all":
+        expenses_tsv = _build_all_expenses_tsv(store)
+        income_tsv = _build_all_income_tsv(store)
+        balances_tsv = _build_all_balances_tsv(store)
+        if not expenses_tsv and not income_tsv and not balances_tsv:
+            await query.edit_message_text("No data to export.")
+            return
+        sent = 0
+        await query.edit_message_text("Exporting all data...")
+        if expenses_tsv:
+            await query.message.reply_document(
+                document=io.BytesIO(expenses_tsv), filename="expenses.tsv",
+            )
+            sent += 1
+        if income_tsv:
+            await query.message.reply_document(
+                document=io.BytesIO(income_tsv), filename="income.tsv",
+            )
+            sent += 1
+        if balances_tsv:
+            await query.message.reply_document(
+                document=io.BytesIO(balances_tsv), filename="balances.tsv",
+            )
+            sent += 1
+
+
 # ── settings handlers ─────────────────────────────────────────────────────────
 
 async def cmd_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1442,6 +1593,7 @@ async def post_init(app: Application) -> None:
         BotCommand("out", "Record expense"),
         BotCommand("settings", "Configure report format"),
         BotCommand("balance", "Manage account balances"),
+        BotCommand("export", "Export all data as TSV files"),
     ])
 
 
@@ -1470,6 +1622,7 @@ def main() -> None:
     app.add_handler(CommandHandler("out", cmd_out))
     app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CommandHandler("balance", cmd_balance))
+    app.add_handler(CommandHandler("export", cmd_export))
 
     # Callbacks
     app.add_handler(CallbackQueryHandler(cb_set_month,    pattern=r"^set_month:"))
@@ -1510,6 +1663,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_balance_ccy_other,     pattern=r"^balance_ccy_other:"))
     app.add_handler(CallbackQueryHandler(cb_balance_edit,          pattern=r"^balance_edit$"))
     app.add_handler(CallbackQueryHandler(cb_balance_edit_pick,     pattern=r"^balance_edit_pick:"))
+    app.add_handler(CallbackQueryHandler(cb_export,                pattern=r"^export:"))
 
     # Payment messages (any non-command text)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payment))
