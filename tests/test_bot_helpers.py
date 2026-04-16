@@ -425,10 +425,23 @@ def test_balance_menu_text_includes_month():
     assert "March 2026" in text
 
 
-def test_balance_menu_shows_balance_with_value():
-    _, markup = _build_balance_menu("2026-03", ["Savings"], {"Savings": 5000.0})
+def test_balance_menu_shows_balance_with_currency_sign_rub():
+    _, markup = _build_balance_menu(
+        "2026-03", ["Savings"], {"Savings": 5000.0},
+        currencies={"Savings": "RUB"},
+    )
     texts = [btn.text for row in markup.inline_keyboard for btn in row]
-    assert any("Savings" in t and "5000" in t for t in texts)
+    assert any("Savings" in t and "₽" in t and "5" in t for t in texts)
+
+
+def test_balance_menu_shows_balance_with_currency_sign_usd():
+    _, markup = _build_balance_menu(
+        "2026-03", ["Wise"], {"Wise": 1000.0},
+        currencies={"Wise": "USD"},
+        rates={"USD": {"2026-03": 88.5}},
+    )
+    texts = [btn.text for row in markup.inline_keyboard for btn in row]
+    assert any("Wise" in t and "$" in t for t in texts)
 
 
 def test_balance_menu_shows_dash_when_no_value():
@@ -573,27 +586,36 @@ def test_convert_to_rub_missing_rate_is_none():
     assert convert_to_rub(100.0, "USD", "2026-03", {}) is None
 
 
-def test_balance_menu_row_label_includes_currency():
-    _, markup = _build_balance_menu(
-        "2026-03",
-        ["Revolut"],
-        {"Revolut": 100.0},
-        currencies={"Revolut": "USD"},
-        rates={"USD": {"2026-03": 92.0}},
-    )
-    labels = [btn.text for row in markup.inline_keyboard for btn in row]
-    assert any("Revolut (USD): 100" in lbl for lbl in labels)
+def test_balance_menu_has_edit_button():
+    _, markup = _build_balance_menu("2026-03", ["Savings"], {})
+    cbs = _balance_menu_cb(markup)
+    assert "balance_edit" in cbs
 
 
-def test_balance_menu_footer_shows_total():
+def test_balance_menu_per_currency_subtotals():
     text, _ = _build_balance_menu(
         "2026-03",
-        ["Savings"],
-        {"Savings": 5000.0},
-        currencies={"Savings": "RUB"},
-        rates={},
+        ["Tinkoff", "Wise"],
+        {"Tinkoff": 100000.0, "Wise": 1000.0},
+        currencies={"Tinkoff": "RUB", "Wise": "USD"},
+        rates={"USD": {"2026-03": 88.5}},
     )
-    assert "Total:" in text and "5" in text
+    # Should show per-currency subtotal lines
+    assert "RUB:" in text
+    assert "USD:" in text
+    assert "\u2192" in text  # conversion arrow for USD
+    assert "Total:" in text
+
+
+def test_balance_menu_subtotal_shows_rate():
+    text, _ = _build_balance_menu(
+        "2026-03",
+        ["Wise"],
+        {"Wise": 1000.0},
+        currencies={"Wise": "USD"},
+        rates={"USD": {"2026-03": 88.5}},
+    )
+    assert "88.5" in text
 
 
 def test_balance_menu_footer_partial_when_rate_missing():
@@ -604,8 +626,7 @@ def test_balance_menu_footer_partial_when_rate_missing():
         currencies={"Revolut": "USD"},
         rates={},
     )
-    assert "partial" in text
-    assert "USD" in text
+    assert "?" in text
 
 
 def test_balance_menu_no_footer_when_empty():
@@ -618,10 +639,15 @@ def test_balance_menu_no_footer_when_no_values():
     assert "Total:" not in text
 
 
-def test_balance_menu_has_edit_button():
-    _, markup = _build_balance_menu("2026-03", ["Savings"], {})
-    cbs = _balance_menu_cb(markup)
-    assert "balance_edit" in cbs
+def test_balance_menu_rub_only_no_arrow():
+    text, _ = _build_balance_menu(
+        "2026-03",
+        ["Savings"],
+        {"Savings": 5000.0},
+        currencies={"Savings": "RUB"},
+    )
+    assert "\u2192" not in text
+    assert "Total:" in text
 
 
 # ── auto-prompt state machine ────────────────────────────────────────────────

@@ -174,49 +174,74 @@ def _build_balance_menu(
 ) -> tuple:
     """
     Build the /balance main menu keyboard.
-    month_values: {name: amount} for the current month (may be partial or empty).
-    currencies: {name: ccy} — missing names default to RUB.
-    rates: {ccy: {month: float}} — used to compute the footer total.
+    month_values: {name: amount} for the current month.
+    currencies: {name: ccy}.
+    rates: {ccy: {month: float}}.
     Pure function — no I/O.
     """
     currencies = currencies or {}
     rates = rates or {}
-    lines = [f"Balances — {_month_label(month)}"]
+    lines = ["Balances \u2014 {}".format(_month_label(month))]
     rows = [[
-        InlineKeyboardButton("＋ Add",    callback_data="balance_add"),
-        InlineKeyboardButton("－ Remove", callback_data="balance_remove"),
-        InlineKeyboardButton("⚙ Edit",    callback_data="balance_edit"),
+        InlineKeyboardButton("\uff0b Add",    callback_data="balance_add"),
+        InlineKeyboardButton("\uff0d Remove", callback_data="balance_remove"),
+        InlineKeyboardButton("\u2699 Edit",    callback_data="balance_edit"),
     ]]
-    total_rub = 0.0
-    missing = []
+
+    # Per-account buttons with currency signs
     for name in current_names:
         amount = month_values.get(name)
         ccy = currencies.get(name, "RUB")
-        formatted = _format_balance_amount(amount)
-        if ccy == "RUB":
-            label = f"{name}: {formatted}"
-        else:
-            label = f"{name} ({ccy}): {formatted}"
-        rows.append([InlineKeyboardButton(label, callback_data=f"balance_set:{name}")])
-        if amount is None:
-            continue
-        converted = convert_to_rub(amount, ccy, month, rates)
-        if converted is None:
-            if ccy not in missing:
-                missing.append(ccy)
-        else:
-            total_rub += converted
+        label = "{}: {}".format(name, _format_ccy_amount(amount, ccy))
+        rows.append([InlineKeyboardButton(label, callback_data="balance_set:{}".format(name))])
+
+    # Per-currency subtotals
     if current_names:
         any_amount = any(month_values.get(n) is not None for n in current_names)
         if any_amount:
+            lines.append("")  # blank line separator
+            # Group amounts by currency
+            ccy_totals = {}  # type: dict
+            for name in current_names:
+                amount = month_values.get(name)
+                if amount is None:
+                    continue
+                ccy = currencies.get(name, "RUB")
+                ccy_totals[ccy] = ccy_totals.get(ccy, 0.0) + amount
+
+            total_rub = 0.0
+            missing = []
+            for ccy, native_sum in ccy_totals.items():
+                if ccy == "RUB":
+                    lines.append("RUB: {}".format(_format_ccy_amount(native_sum, "RUB")))
+                    total_rub += native_sum
+                else:
+                    converted = convert_to_rub(native_sum, ccy, month, rates)
+                    rate = rates.get(ccy, {}).get(month)
+                    if converted is not None and rate is not None:
+                        sign = _CCY_SIGNS.get(ccy, ccy)
+                        lines.append("{}: {} \u2192 {} (1{} = {}\u20bd)".format(
+                            ccy,
+                            _format_ccy_amount(native_sum, ccy),
+                            _format_rub_total(converted),
+                            sign,
+                            rate,
+                        ))
+                        total_rub += converted
+                    else:
+                        lines.append("{}: {} \u2192 ?".format(
+                            ccy,
+                            _format_ccy_amount(native_sum, ccy),
+                        ))
+                        if ccy not in missing:
+                            missing.append(ccy)
+
             if missing:
-                lines.append(
-                    f"Total: {_format_rub_total(total_rub)} "
-                    f"(partial — missing {', '.join(missing)} rate)"
-                )
+                lines.append("Total: {} (partial)".format(_format_rub_total(total_rub)))
             else:
-                lines.append(f"Total: {_format_rub_total(total_rub)}")
-    rows.append([InlineKeyboardButton("✓ Done", callback_data="balance_done")])
+                lines.append("Total: {}".format(_format_rub_total(total_rub)))
+
+    rows.append([InlineKeyboardButton("\u2713 Done", callback_data="balance_done")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
