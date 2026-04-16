@@ -36,6 +36,7 @@ from telegram.ext import (
     filters,
 )
 
+from cbr import fetch_rate
 from parser import ParseError, load_categories, parse_income, parse_payment
 from storage import Storage
 
@@ -139,6 +140,26 @@ def convert_to_rub(
     if rate is None:
         return None
     return float(amount) * float(rate)
+
+
+async def _resolve_rate(
+    store: "Storage",
+    ccy: str,
+    month: str,
+) -> Optional[float]:
+    """Try to get a rate: check cache first, then fetch from CBR.
+
+    Stores fetched rates in the cache. Returns None if both fail.
+    """
+    if ccy == "RUB":
+        return 1.0
+    rate = store.get_rate(ccy, month)
+    if rate is not None:
+        return rate
+    rate = await fetch_rate(ccy, month)
+    if rate is not None:
+        store.set_rate(ccy, month, rate)
+    return rate
 
 
 def _resolve_balance_name(input_name: str, current_names: list[str]) -> tuple[Optional[str], list[str]]:
@@ -632,7 +653,7 @@ async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Menu form: /balance
     month = store.get_current_month()
-    text, markup = _build_balance_menu_from_store(store, month)
+    text, markup = await _build_balance_menu_from_store(store, month)
     msg = await update.message.reply_text(text, reply_markup=markup)
     ctx.user_data["balance"] = {
         "awaiting": None, "pending_amount": None,
@@ -719,6 +740,12 @@ async def cb_report_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         historic_names = store.get_historic_names()
         month_data = {m: store.get_balance_month(m) for m in months}
         currencies = store.get_all_currencies()
+        # Auto-fetch missing rates for each month
+        for m in months:
+            for name in historic_names:
+                ccy = currencies.get(name, "RUB")
+                if ccy != "RUB":
+                    await _resolve_rate(store, ccy, m)
         rates = store.get_all_rates()
         tab_lines  = render_balance_report(months, historic_names, month_data,
                                            separator="\t", currencies=currencies, rates=rates)
@@ -929,13 +956,19 @@ async def cb_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── balance callbacks ─────────────────────────────────────────────────────────
 
-def _build_balance_menu_from_store(store: "Storage", month: str) -> tuple:
-    """Assemble `_build_balance_menu` args from the store."""
+async def _build_balance_menu_from_store(store: "Storage", month: str) -> tuple:
+    """Assemble `_build_balance_menu` args from the store, auto-fetching missing rates."""
+    currencies = store.get_all_currencies()
+    # Auto-fetch any missing rates for non-RUB currencies
+    for name in store.get_balance_names():
+        ccy = currencies.get(name, "RUB")
+        if ccy != "RUB":
+            await _resolve_rate(store, ccy, month)
     return _build_balance_menu(
         month,
         store.get_balance_names(),
         store.get_balance_month(month),
-        store.get_all_currencies(),
+        currencies,
         store.get_all_rates(),
     )
 
@@ -943,7 +976,7 @@ def _build_balance_menu_from_store(store: "Storage", month: str) -> tuple:
 async def _render_balance_menu_on_query(query, store: "Storage") -> None:
     """Re-render the balance menu on an existing query message."""
     month = store.get_current_month()
-    text, markup = _build_balance_menu_from_store(store, month)
+    text, markup = await _build_balance_menu_from_store(store, month)
     await query.edit_message_text(text, reply_markup=markup)
 
 
@@ -1214,19 +1247,10 @@ async def cb_balance_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     query = update.callback_query
     await query.answer()
     store: Storage = ctx.bot_data["store"]
-    months = store.list_balance_months()
-    if not months:
+    tsv_bytes = await _build_all_balances_tsv(store)
+    if not tsv_bytes:
         await query.message.reply_text("❌ No balance data yet.")
         return
-    historic_names = store.get_historic_names()
-    month_data = {m: store.get_balance_month(m) for m in months}
-    lines = render_balance_report(
-        months, historic_names, month_data,
-        separator="\t",
-        currencies=store.get_all_currencies(),
-        rates=store.get_all_rates(),
-    )
-    tsv_bytes = "\n".join(lines).encode("utf-8")
     await query.message.reply_document(
         document=io.BytesIO(tsv_bytes),
         filename="balances.tsv",
@@ -1260,21 +1284,24 @@ async def _commit_balance_with_rate_check(
     amount: float,
 ):
     """
-    Try to commit a balance. If its currency has no stored rate for `month`,
-    stash pending state and return a ("rate_prompt", text) tuple so the caller
-    can message the user. Otherwise commit and return ("done", None).
+    Try to commit a balance. If its currency is non-RUB, attempt to
+    auto-fetch the rate from CBR. Only falls back to manual prompt
+    if CBR fails.
     """
     ccy = store.get_balance_currency(name)
-    if ccy != "RUB" and store.get_rate(ccy, month) is None:
-        ctx.user_data["balance"] = {
-            "awaiting": "rate",
-            "pending": {"month": month, "name": name, "amount": amount, "ccy": ccy},
-        }
-        text = (
-            f"Enter FX rate for {ccy} in {_month_label(month)}:\n"
-            f"1 {ccy} = ? RUB"
-        )
-        return "rate_prompt", text
+    if ccy != "RUB":
+        rate = await _resolve_rate(store, ccy, month)
+        if rate is None:
+            ctx.user_data["balance"] = {
+                "awaiting": "rate",
+                "pending": {"month": month, "name": name, "amount": amount, "ccy": ccy},
+            }
+            text = (
+                "Could not fetch rate from CBR.\n"
+                "Enter FX rate for {} in {}:\n"
+                "1 {} = ? RUB"
+            ).format(ccy, _month_label(month), ccy)
+            return "rate_prompt", text
     store.set_balance(month, name, amount)
     return "done", None
 
@@ -1299,7 +1326,7 @@ async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
             await update.message.reply_text(prompt)
             return
         ctx.user_data.pop("balance", None)
-        menu_text, markup = _build_balance_menu_from_store(store, month)
+        menu_text, markup = await _build_balance_menu_from_store(store, month)
         await update.message.reply_text(
             f"✅ {name}: {_format_balance_amount(amount)}\n\n{menu_text}",
             reply_markup=markup,
@@ -1331,7 +1358,7 @@ async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
             store.set_balance_currency(name, ccy)
             ctx.user_data.pop("balance", None)
             month = store.get_current_month()
-            menu_text, markup = _build_balance_menu_from_store(store, month)
+            menu_text, markup = await _build_balance_menu_from_store(store, month)
             await update.message.reply_text(
                 f"✅ {name}: currency set to {ccy}\n\n{menu_text}",
                 reply_markup=markup,
@@ -1347,7 +1374,7 @@ async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
                 await update.message.reply_text(prompt)
                 return
         ctx.user_data.pop("balance", None)
-        menu_text, markup = _build_balance_menu_from_store(store, month)
+        menu_text, markup = await _build_balance_menu_from_store(store, month)
         await update.message.reply_text(
             f"✅ Added *{name}* ({ccy}).\n\n{menu_text}",
             parse_mode="Markdown",
@@ -1371,7 +1398,7 @@ async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
         store.set_rate(ccy, month, rate)
         store.set_balance(month, name, amount)
         ctx.user_data.pop("balance", None)
-        menu_text, markup = _build_balance_menu_from_store(store, month)
+        menu_text, markup = await _build_balance_menu_from_store(store, month)
         await update.message.reply_text(
             f"✅ Rate saved: 1 {ccy} = {rate} RUB\n"
             f"✅ {name}: {_format_balance_amount(amount)}\n\n{menu_text}",
@@ -1440,17 +1467,23 @@ def _build_all_income_tsv(store: Storage) -> Optional[bytes]:
     return "\n".join(all_lines).encode("utf-8")
 
 
-def _build_all_balances_tsv(store: Storage) -> Optional[bytes]:
+async def _build_all_balances_tsv(store: Storage) -> Optional[bytes]:
     """Build a TSV with all balance data, chronologically."""
     months = store.list_balance_months()
     if not months:
         return None
     historic_names = store.get_historic_names()
+    currencies = store.get_all_currencies()
+    for m in months:
+        for name in historic_names:
+            ccy = currencies.get(name, "RUB")
+            if ccy != "RUB":
+                await _resolve_rate(store, ccy, m)
     month_data = {m: store.get_balance_month(m) for m in months}
     lines = render_balance_report(
         sorted(months), historic_names, month_data,
         separator="\t",
-        currencies=store.get_all_currencies(),
+        currencies=currencies,
         rates=store.get_all_rates(),
     )
     return "\n".join(lines).encode("utf-8")
@@ -1483,7 +1516,7 @@ async def cb_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
     elif export_type == "balances":
-        tsv = _build_all_balances_tsv(store)
+        tsv = await _build_all_balances_tsv(store)
         if not tsv:
             await query.edit_message_text("No balance data to export.")
             return
@@ -1495,7 +1528,7 @@ async def cb_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     elif export_type == "all":
         expenses_tsv = _build_all_expenses_tsv(store)
         income_tsv = _build_all_income_tsv(store)
-        balances_tsv = _build_all_balances_tsv(store)
+        balances_tsv = await _build_all_balances_tsv(store)
         if not expenses_tsv and not income_tsv and not balances_tsv:
             await query.edit_message_text("No data to export.")
             return

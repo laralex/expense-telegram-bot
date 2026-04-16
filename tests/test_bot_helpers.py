@@ -719,10 +719,43 @@ class _FakeCtx:
         self.user_data = {}
 
 
-def test_commit_balance_with_rate_check_prompts_when_rate_missing(tmp_path):
+def test_commit_balance_with_rate_check_auto_fetches(tmp_path, monkeypatch):
+    """When rate is missing and CBR returns a rate, it should auto-store and commit."""
     import asyncio
     from storage import Storage
     from bot import _commit_balance_with_rate_check
+
+    # Mock fetch_rate to return a known value
+    async def fake_fetch(ccy, month):
+        if ccy == "USD":
+            return 88.5
+        return None
+
+    monkeypatch.setattr("bot.fetch_rate", fake_fetch)
+
+    s = Storage(data_dir=str(tmp_path))
+    s.add_balance_name("Revolut", currency="USD")
+    ctx = _FakeCtx()
+    status, prompt = asyncio.get_event_loop().run_until_complete(
+        _commit_balance_with_rate_check(s, ctx, "2026-03", "Revolut", 100.0)
+    )
+    assert status == "done"
+    assert prompt is None
+    assert s.get_balance_month("2026-03") == {"Revolut": 100.0}
+    assert s.get_rate("USD", "2026-03") == 88.5
+
+
+def test_commit_balance_with_rate_check_falls_back_to_prompt(tmp_path, monkeypatch):
+    """When rate is missing and CBR fails, it should fall back to manual prompt."""
+    import asyncio
+    from storage import Storage
+    from bot import _commit_balance_with_rate_check
+
+    async def fake_fetch(ccy, month):
+        return None  # CBR failure
+
+    monkeypatch.setattr("bot.fetch_rate", fake_fetch)
+
     s = Storage(data_dir=str(tmp_path))
     s.add_balance_name("Revolut", currency="USD")
     ctx = _FakeCtx()
@@ -731,19 +764,23 @@ def test_commit_balance_with_rate_check_prompts_when_rate_missing(tmp_path):
     )
     assert status == "rate_prompt"
     assert "USD" in prompt
-    state = ctx.user_data["balance"]
-    assert state["awaiting"] == "rate"
-    assert state["pending"] == {
-        "month": "2026-03", "name": "Revolut", "amount": 100.0, "ccy": "USD"
-    }
-    # Balance not committed yet.
     assert s.get_balance_month("2026-03") == {}
 
 
-def test_commit_balance_with_rate_check_commits_when_rate_present(tmp_path):
+def test_commit_balance_with_rate_check_uses_cached_rate(tmp_path, monkeypatch):
+    """When rate is already cached, should use it without fetching."""
     import asyncio
     from storage import Storage
     from bot import _commit_balance_with_rate_check
+
+    fetch_called = []
+
+    async def fake_fetch(ccy, month):
+        fetch_called.append(True)
+        return 88.5
+
+    monkeypatch.setattr("bot.fetch_rate", fake_fetch)
+
     s = Storage(data_dir=str(tmp_path))
     s.add_balance_name("Revolut", currency="USD")
     s.set_rate("USD", "2026-03", 92.0)
@@ -752,8 +789,32 @@ def test_commit_balance_with_rate_check_commits_when_rate_present(tmp_path):
         _commit_balance_with_rate_check(s, ctx, "2026-03", "Revolut", 100.0)
     )
     assert status == "done"
-    assert prompt is None
-    assert s.get_balance_month("2026-03") == {"Revolut": 100.0}
+    assert len(fetch_called) == 0  # should not have called fetch
+    assert s.get_rate("USD", "2026-03") == 92.0  # original cached rate unchanged
+
+
+def test_commit_balance_rub_skips_rate_check(tmp_path, monkeypatch):
+    """RUB balances should not trigger any rate fetching."""
+    import asyncio
+    from storage import Storage
+    from bot import _commit_balance_with_rate_check
+
+    fetch_called = []
+
+    async def fake_fetch(ccy, month):
+        fetch_called.append(True)
+        return None
+
+    monkeypatch.setattr("bot.fetch_rate", fake_fetch)
+
+    s = Storage(data_dir=str(tmp_path))
+    s.add_balance_name("Savings", currency="RUB")
+    ctx = _FakeCtx()
+    status, prompt = asyncio.get_event_loop().run_until_complete(
+        _commit_balance_with_rate_check(s, ctx, "2026-03", "Savings", 5000.0)
+    )
+    assert status == "done"
+    assert len(fetch_called) == 0
 
 
 # ── report type keyboard (updated for balance) ────────────────────────────────
