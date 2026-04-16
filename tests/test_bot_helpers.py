@@ -896,22 +896,31 @@ def test_build_all_income_tsv_multiple_months_chronological(tmp_path):
 # ── _build_all_balances_tsv ──────────────────────────────────────────────────
 
 def test_build_all_balances_tsv_empty(tmp_path):
+    import asyncio
     from storage import Storage
     s = Storage(data_dir=str(tmp_path))
-    assert _build_all_balances_tsv(s) is None
+    result = asyncio.get_event_loop().run_until_complete(_build_all_balances_tsv(s))
+    assert result is None
 
 
-def test_build_all_balances_tsv_with_data(tmp_path):
+def test_build_all_balances_tsv_with_data(tmp_path, monkeypatch):
+    import asyncio
     from storage import Storage
+
+    async def fake_fetch(ccy, month):
+        return None
+
+    monkeypatch.setattr("bot.fetch_rate", fake_fetch)
+
     s = Storage(data_dir=str(tmp_path))
     s.add_balance_name("Savings")
     s.set_balance("2026-03", "Savings", 5000.0)
     s.set_balance("2026-02", "Savings", 4800.0)
-    result = _build_all_balances_tsv(s)
+    result = asyncio.get_event_loop().run_until_complete(_build_all_balances_tsv(s))
     assert result is not None
     lines = result.decode("utf-8").split("\n")
     assert len(lines) == 3  # header + 2 months
-    assert "month" in lines[0]  # header
+    assert "Savings" in lines[0]  # header
     # Chronological: 2026-02 first, then 2026-03
     assert "2026-02" in lines[1]
     assert "2026-03" in lines[2]
