@@ -280,39 +280,46 @@ def render_balance_report(
 ) -> list:
     """
     Render a balance report as a list of separator-joined strings.
-    First element is the header row (includes trailing 'Total RUB' column).
-    Months in the order given (caller sorts). Missing native values render
-    as empty cells. Total cells render '?' when any non-RUB balance in the
-    month has no stored rate. Pure function.
+    Columns: month, then each balance name with currency sign in header,
+    then one rate column per non-RUB currency.
+    Pure function.
     """
     currencies = currencies or {}
     rates = rates or {}
-    header = separator.join(["month"] + list(historic_names) + ["Total RUB"])
-    rows = [header]
+
+    # Determine which non-RUB currencies are in use (for rate columns)
+    rate_ccys = []  # type: list
+    for name in historic_names:
+        ccy = currencies.get(name, "RUB")
+        if ccy != "RUB" and ccy not in rate_ccys:
+            rate_ccys.append(ccy)
+
+    # Build header
+    name_headers = []
+    for name in historic_names:
+        ccy = currencies.get(name, "RUB")
+        sign = _CCY_SIGNS.get(ccy, ccy)
+        name_headers.append("{} ({})".format(name, sign))
+    header_parts = ["month"] + name_headers + rate_ccys
+    rows = [separator.join(header_parts)]
+
+    # Data rows
     for month in months:
         values = month_data.get(month, {})
         cells = [month]
-        total = 0.0
-        partial = False
         for name in historic_names:
             if name in values:
                 cells.append(_format_balance_amount(values.get(name)))
             else:
                 cells.append("")
-        for name, amount in values.items():
-            ccy = currencies.get(name, "RUB")
-            converted = convert_to_rub(amount, ccy, month, rates)
-            if converted is None:
-                partial = True
+        for ccy in rate_ccys:
+            rate = rates.get(ccy, {}).get(month)
+            if rate is not None:
+                cells.append(str(rate))
             else:
-                total += converted
-        if partial:
-            cells.append("?")
-        elif not values:
-            cells.append("")
-        else:
-            cells.append(_format_balance_amount(total))
+                cells.append("")
         rows.append(separator.join(cells))
+
     return rows
 
 

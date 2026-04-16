@@ -487,24 +487,42 @@ def test_balance_remove_confirm_has_three_buttons():
 
 # ── render_balance_report ─────────────────────────────────────────────────────
 
-def test_render_balance_report_header_row():
+def test_render_balance_report_header_with_currency_signs():
     lines = render_balance_report(
         months=["2026-03"],
-        historic_names=["Savings", "Checking"],
+        historic_names=["Savings", "Wise"],
         month_data={"2026-03": {"Savings": 5000.0}},
         separator="\t",
+        currencies={"Savings": "RUB", "Wise": "USD"},
+        rates={"USD": {"2026-03": 88.5}},
     )
-    assert lines[0] == "month\tSavings\tChecking\tTotal RUB"
+    header = lines[0]
+    assert "Savings (\u20bd)" in header
+    assert "Wise ($)" in header
+    assert "USD" in header  # rate column
+    assert "Total RUB" not in header  # no total column
 
 
-def test_render_balance_report_data_row_with_value():
+def test_render_balance_report_no_total_column():
     lines = render_balance_report(
         months=["2026-03"],
         historic_names=["Savings"],
         month_data={"2026-03": {"Savings": 5000.0}},
         separator="\t",
+        currencies={"Savings": "RUB"},
     )
-    assert lines[1] == "2026-03\t5000\t5000"
+    assert "Total" not in lines[0]
+
+
+def test_render_balance_report_data_row_values():
+    lines = render_balance_report(
+        months=["2026-03"],
+        historic_names=["Savings"],
+        month_data={"2026-03": {"Savings": 5000.0}},
+        separator="\t",
+        currencies={"Savings": "RUB"},
+    )
+    assert lines[1] == "2026-03\t5000"
 
 
 def test_render_balance_report_missing_value_is_empty():
@@ -513,8 +531,9 @@ def test_render_balance_report_missing_value_is_empty():
         historic_names=["Savings", "Checking"],
         month_data={"2026-03": {"Savings": 5000.0}},
         separator="\t",
+        currencies={"Savings": "RUB", "Checking": "RUB"},
     )
-    assert lines[1] == "2026-03\t5000\t\t5000"
+    assert lines[1] == "2026-03\t5000\t"
 
 
 def test_render_balance_report_semicolon_separator():
@@ -523,52 +542,95 @@ def test_render_balance_report_semicolon_separator():
         historic_names=["Savings"],
         month_data={"2026-03": {"Savings": 1200.0}},
         separator=";",
+        currencies={"Savings": "RUB"},
     )
-    assert lines[1] == "2026-03;1200;1200"
+    assert lines[1] == "2026-03;1200"
 
 
-def test_render_balance_report_total_rub_with_mixed_currencies():
+def test_render_balance_report_inline_rate_columns():
     lines = render_balance_report(
         months=["2026-03"],
-        historic_names=["Savings", "Revolut"],
-        month_data={"2026-03": {"Savings": 1000.0, "Revolut": 100.0}},
+        historic_names=["Savings", "Wise"],
+        month_data={"2026-03": {"Savings": 1000.0, "Wise": 100.0}},
         separator="\t",
-        currencies={"Savings": "RUB", "Revolut": "USD"},
-        rates={"USD": {"2026-03": 92.0}},
+        currencies={"Savings": "RUB", "Wise": "USD"},
+        rates={"USD": {"2026-03": 88.5}},
     )
-    # 1000 + 100*92 = 10200
-    assert lines[1].endswith("\t10200")
+    # Header should have rate column for USD
+    parts = lines[0].split("\t")
+    assert "USD" in parts
+    # Data row should have rate value
+    data_parts = lines[1].split("\t")
+    assert "88.5" in data_parts
 
 
-def test_render_balance_report_missing_rate_partial():
+def test_render_balance_report_multiple_rate_columns():
     lines = render_balance_report(
         months=["2026-03"],
-        historic_names=["Revolut"],
-        month_data={"2026-03": {"Revolut": 100.0}},
+        historic_names=["Tinkoff", "Wise", "Broker"],
+        month_data={"2026-03": {"Tinkoff": 100000.0, "Wise": 1000.0, "Broker": 500.0}},
         separator="\t",
-        currencies={"Revolut": "USD"},
+        currencies={"Tinkoff": "RUB", "Wise": "USD", "Broker": "EUR"},
+        rates={"USD": {"2026-03": 88.5}, "EUR": {"2026-03": 96.2}},
+    )
+    header_parts = lines[0].split("\t")
+    # Should have: month, Tinkoff (₽), Wise ($), Broker (€), USD, EUR
+    assert len(header_parts) == 6
+    assert "USD" in header_parts
+    assert "EUR" in header_parts
+
+
+def test_render_balance_report_missing_rate_shows_empty():
+    lines = render_balance_report(
+        months=["2026-03"],
+        historic_names=["Wise"],
+        month_data={"2026-03": {"Wise": 100.0}},
+        separator="\t",
+        currencies={"Wise": "USD"},
         rates={},
     )
-    assert lines[1].endswith("\t?")
+    data_parts = lines[1].split("\t")
+    # Wise value, then empty rate column
+    assert data_parts == ["2026-03", "100", ""]
 
 
-def test_render_balance_report_multiple_months_order_preserved():
+def test_render_balance_report_no_rate_columns_for_rub_only():
+    lines = render_balance_report(
+        months=["2026-03"],
+        historic_names=["Savings"],
+        month_data={"2026-03": {"Savings": 5000.0}},
+        separator="\t",
+        currencies={"Savings": "RUB"},
+    )
+    header_parts = lines[0].split("\t")
+    # Only: month, Savings (₽)
+    assert len(header_parts) == 2
+
+
+def test_render_balance_report_multiple_months_with_rates():
     lines = render_balance_report(
         months=["2026-03", "2026-02"],
-        historic_names=["Savings"],
+        historic_names=["Wise"],
         month_data={
-            "2026-03": {"Savings": 5000.0},
-            "2026-02": {"Savings": 4800.0},
+            "2026-03": {"Wise": 1000.0},
+            "2026-02": {"Wise": 900.0},
         },
         separator="\t",
+        currencies={"Wise": "USD"},
+        rates={"USD": {"2026-03": 88.5, "2026-02": 90.0}},
     )
-    assert "2026-03" in lines[1]
-    assert "2026-02" in lines[2]
+    assert "88.5" in lines[1]
+    assert "90.0" in lines[2]
 
 
 def test_render_balance_report_empty_returns_header_only():
-    lines = render_balance_report([], ["Savings"], {}, separator="\t")
-    assert lines == ["month\tSavings\tTotal RUB"]
+    lines = render_balance_report(
+        [], ["Savings"], {},
+        separator="\t",
+        currencies={"Savings": "RUB"},
+    )
+    assert len(lines) == 1
+    assert "Savings" in lines[0]
 
 
 def test_convert_to_rub_rub_shortcut():
