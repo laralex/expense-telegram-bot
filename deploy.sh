@@ -10,7 +10,7 @@ SERVICE_NAME="expense-tracker"
 SERVICE_FILE="receipt-tracker.service"
 VENV="$DEPLOY_DIR/.venv"
 
-FILES=(bot.py parser.py storage.py categories.yaml requirements.txt "$SERVICE_FILE")
+FILES=(bot.py cbr.py parser.py storage.py categories.yaml requirements.txt "$SERVICE_FILE")
 
 echo "==> Pulling latest from main"
 git pull origin main
