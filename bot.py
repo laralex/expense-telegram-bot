@@ -49,11 +49,11 @@ def _month_label(month: str) -> str:
     return datetime.strptime(month, "%Y-%m").strftime("%B %Y")
 
 
-def _last_12_months(current: str) -> list[str]:
-    """Return last 12 calendar months newest-first."""
+def _month_options(current: str) -> list[str]:
+    """Return 2 future months + current + 11 past months, newest-first."""
     today = datetime.today()
     months = []
-    for i in range(12):
+    for i in range(-2, 12):
         month = today.month - i
         year = today.year + (month - 1) // 12
         month = (month - 1) % 12 + 1
@@ -568,7 +568,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     store: Storage = ctx.bot_data["store"]
     current = store.get_current_month()
-    months = _last_12_months(current)
+    months = _month_options(current)
     keyboard = []
     for m in months:
         label = ("✓ " if m == current else "") + _month_label(m)
