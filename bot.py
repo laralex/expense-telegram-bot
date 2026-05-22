@@ -44,6 +44,9 @@ from storage import Storage
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+TELEGRAM_MESSAGE_LIMIT = 4096
+
+
 def _month_label(month: str) -> str:
     """'2026-03' → 'March 2026'"""
     return datetime.strptime(month, "%Y-%m").strftime("%B %Y")
@@ -694,8 +697,11 @@ async def cb_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         buttons.append(InlineKeyboardButton("Semicolon separated", copy_text=CopyTextButton(text=semi_report)))
     buttons.append(InlineKeyboardButton(".tsv file", callback_data=f"tsv:{month}"))
     keyboard = InlineKeyboardMarkup([[b] for b in buttons])
+    body = f"<pre>{tab_report}</pre>"
+    if len(body) > TELEGRAM_MESSAGE_LIMIT:
+        body = f"Report too large for inline preview ({len(records)} records). Use the .tsv file button below."
     await query.edit_message_text(
-        f"<pre>{tab_report}</pre>",
+        body,
         parse_mode="HTML",
         reply_markup=keyboard,
     )
@@ -760,8 +766,11 @@ async def cb_report_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
         if len(semi_report) <= 256:
             buttons.append(InlineKeyboardButton("Semicolon separated", copy_text=CopyTextButton(text=semi_report)))
         buttons.append(InlineKeyboardButton(".tsv file", callback_data="balance_tsv"))
+        body = f"<pre>{tab_report}</pre>"
+        if len(body) > TELEGRAM_MESSAGE_LIMIT:
+            body = f"Report too large for inline preview ({len(months)} months). Use the .tsv file button below."
         await query.edit_message_text(
-            f"<pre>{tab_report}</pre>",
+            body,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[b] for b in buttons]),
         )
@@ -1217,8 +1226,11 @@ async def cb_income_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
     if len(semi_report) <= 256:
         buttons.append(InlineKeyboardButton("Semicolon separated", copy_text=CopyTextButton(text=semi_report)))
     buttons.append(InlineKeyboardButton(".tsv file", callback_data=f"income_tsv:{month}"))
+    body = f"<pre>{tab_report}</pre>"
+    if len(body) > TELEGRAM_MESSAGE_LIMIT:
+        body = f"Report too large for inline preview ({len(records)} records). Use the .tsv file button below."
     await query.edit_message_text(
-        f"<pre>{tab_report}</pre>",
+        body,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[b] for b in buttons]),
     )
