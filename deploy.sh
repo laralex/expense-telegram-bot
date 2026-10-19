@@ -32,7 +32,18 @@ for f in "${FILES[@]}"; do
 done
 
 echo "==> Creating virtual environment"
-sudo python3 -m venv "$VENV"
+if ! sudo python3 -m venv "$VENV"; then
+    echo "ERROR: Failed to create virtual environment. Do you have python3-venv installed?" >&2
+    exit 1
+fi
+
+# Verify pip exists in the venv
+if [ ! -f "$VENV/bin/pip" ]; then
+    echo "ERROR: Virtual environment created, but 'pip' is missing in $VENV/bin/pip." >&2
+    echo "This usually means 'python3-venv' is installed without 'ensurepip' on your system." >&2
+    echo "Please run: sudo apt update && sudo apt install python3-venv python3-full" >&2
+    exit 1
+fi
 
 echo "==> Installing dependencies"
 sudo "$VENV/bin/pip" install --quiet -r "$DEPLOY_DIR/requirements.txt"
