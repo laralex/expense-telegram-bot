@@ -395,13 +395,20 @@ def render_rows(
 
 # ── erase helpers ─────────────────────────────────────────────────────────────
 
-def _format_erase_preview(records: list, month: str) -> str:
+def _format_erase_preview(records: list, month: str, record_type: str) -> str:
     """Return a human-readable preview of records about to be erased."""
     if not records:
         return "❌ No records to erase."
     lines = [f"About to erase *{len(records)}* record(s) from *{_month_label(month)}*:"]
-    for date_str, cat, title, amount in records:
-        label = f"{cat} {amount}" + (f" — {title}" if title else "")
+    for record in records:
+        if record_type == "expense":
+            date_str, cat, title, amount = record
+            label = f"{cat} {amount}" + (f" — {title}" if title else "")
+        else:  # income
+            amount_str, taxable, name = record
+            label = f"{amount_str} — {name}"
+            if taxable:
+                label += " (taxable)"
         lines.append(f"  • {label}")
     return "\n".join(lines)
 
@@ -585,7 +592,12 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/out + message body — record expense\n"
         "/report — generate report\n"
         "/erase — menu to delete individual records (expenses or income)\n"
-        "/erase N — delete last N expense records\n"
+        "/erase in N — delete last N income records\n"
+        "/erase out N — delete last N expense records\n"
+        "/erase in month — erase all income for the month\n"
+        "/erase out month — erase all expense for the month\n"
+        "/erase in month — erase all income for the month\n"
+        "/erase out month — erase all expense for the month\n"
         "/balance — manage account balances\n"
         "/export — export all data as TSV files\n"
         "/backup — create a database backup\n"
@@ -652,32 +664,68 @@ async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_erase(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    store: Storage = ctx.bot_data["store"]
-    args = update.message.text.strip().split(None, 1)
+    args = update.message.text.strip().split(None, 2)
 
-    # /erase N — show last N expense records and ask to confirm (unchanged)
-    if len(args) == 2 and args[1].strip().isdigit():
-        n = int(args[1].strip())
-        month = store.get_current_month()
-        records = store.read_month(month)
-        preview_records = records[-n:] if n and records else []
-        text = _format_erase_preview(preview_records, month)
-        if not preview_records:
-            await update.message.reply_text(text)
-            return
+    if len(args) == 1:
+        # /erase -> type selector
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✓ Delete", callback_data=f"erase_last_n_do:{month}:{n}"),
-            InlineKeyboardButton("✗ Cancel", callback_data="erase_cancel"),
+            InlineKeyboardButton("Expenses", callback_data="erase_type:expense"),
+            InlineKeyboardButton("Income",   callback_data="erase_type:income"),
         ]])
-        await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+        await update.message.reply_text("Select type to erase:", reply_markup=keyboard)
         return
 
-    # /erase with no args — type selector
+    usage = "❌ Usage: /erase in N (income) or /erase out N (expense). Use 'month' to erase the whole month."
+
+    if len(args) != 3:
+        # /erase N, /erase in, /erase out — no longer supported
+        await update.message.reply_text(usage)
+        return
+
+    cmd_sub, n_str = args[1], args[2]
+    is_month_mode = (n_str == "month")
+    if not is_month_mode:
+        try:
+            n = int(n_str)
+            if n <= 0:
+                await update.message.reply_text("❌ N must be a positive number.")
+                return
+        except ValueError:
+            await update.message.reply_text("❌ N must be a number or 'month'.")
+            return
+    else:
+        n = 0
+    
+    if cmd_sub == "in":
+        record_type = "income"
+    elif cmd_sub == "out":
+        record_type = "expense"
+    else:
+        await update.message.reply_text(usage)
+        return
+
+    store: Storage = ctx.bot_data["store"]
+    month = store.get_current_month()
+    if record_type == "income":
+        records = store.read_income(month)
+    else:
+        records = store.read_month(month)
+
+    if is_month_mode:
+        n = len(records)
+        preview_records = records
+    else:
+        preview_records = records[-n:] if records else []
+    
+    text = _format_erase_preview(preview_records, month, record_type)
+    if not preview_records:
+        await update.message.reply_text(text)
+        return
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Expenses", callback_data="erase_type:expense"),
-        InlineKeyboardButton("Income",   callback_data="erase_type:income"),
+        InlineKeyboardButton("✓ Delete", callback_data=f"erase_last_n_do:{month}:{n}:{record_type}"),
+        InlineKeyboardButton("✗ Cancel", callback_data="erase_cancel"),
     ]])
-    await update.message.reply_text("Select type to erase:", reply_markup=keyboard)
+    await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -843,10 +891,13 @@ async def cb_report_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
 async def cb_erase_last_n_do(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    _, month, n_str = query.data.split(":")
+    _, month, n_str, record_type = query.data.split(":")
     n = int(n_str)
     store: Storage = ctx.bot_data["store"]
-    deleted = store.delete_last_n_records(month, n)
+    if record_type == "income":
+        deleted = store.delete_last_n_income_records(month, n)
+    else:
+        deleted = store.delete_last_n_records(month, n)
     await query.edit_message_text(
         f"✅ Deleted *{len(deleted)}* record(s) from *{_month_label(month)}*.",
         parse_mode="Markdown",
