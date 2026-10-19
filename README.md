@@ -18,7 +18,6 @@ The bot reads these variables at startup:
 |----------|-------------|
 | `BOT_TOKEN` | Telegram bot token from @BotFather |
 | `USER_IDS` | Comma-separated Telegram user IDs allowed to use the bot — each user gets a private data directory (`data/<user_id>/`) and other users are silently rejected |
-| `OWNER_ID` | Legacy single-user variable — still accepted and merged into `USER_IDS` |
 
 `.env` is gitignored. Copy the example and fill it in:
 
@@ -112,7 +111,7 @@ uv run pytest tests/test_parser.py
 uv run pytest tests/test_storage.py
 ```
 
-Tests do not need `BOT_TOKEN`, `OWNER_ID` or `USER_IDS`.
+Tests do not need `BOT_TOKEN` or `USER_IDS`.
 
 ---
 

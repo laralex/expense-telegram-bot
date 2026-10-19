@@ -5,8 +5,7 @@ from telegram import Message
 
 1. Copy .env.example to .env and fill in BOT_TOKEN and USER_IDS.
    USER_IDS is a comma-separated list of Telegram user IDs allowed to use the bot.
-   Get your ID by messaging @userinfobot on Telegram. (Legacy OWNER_ID is still
-   accepted and merged into the user list.)
+   Get your ID by messaging @userinfobot on Telegram.
 
 2. Install dependencies:
        pip install -r requirements.txt
@@ -1884,12 +1883,6 @@ def main() -> None:
     token = os.environ["BOT_TOKEN"]
 
     user_ids = parse_user_ids(os.environ.get("USER_IDS", ""))
-    # Legacy single-owner fallback: merge OWNER_ID as the first user.
-    legacy_owner = os.environ.get("OWNER_ID", "").strip()
-    if legacy_owner.isdigit():
-        uid = int(legacy_owner)
-        if uid not in user_ids:
-            user_ids.insert(0, uid)
     if not user_ids:
         raise RuntimeError(
             "No users configured. Set USER_IDS (comma-separated Telegram IDs) in .env."
