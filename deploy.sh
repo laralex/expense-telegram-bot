@@ -37,9 +37,9 @@ if ! sudo python3 -m venv "$VENV"; then
     exit 1
 fi
 
-# Verify pip exists in the venv
-if [ ! -f "$VENV/bin/pip" ]; then
-    echo "ERROR: Virtual environment created, but 'pip' is missing in $VENV/bin/pip." >&2
+# Verify pip works in the venv
+if ! sudo "$VENV/bin/pip" --version >/dev/null 2>&1; then
+    echo "ERROR: Virtual environment created, but 'pip' is not working in $VENV/bin/pip." >&2
     echo "This usually means 'python3-venv' is installed without 'ensurepip' on your system." >&2
     echo "Please run: sudo apt update && sudo apt install python3-venv python3-full" >&2
     exit 1
