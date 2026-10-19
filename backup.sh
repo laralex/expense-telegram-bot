@@ -71,7 +71,6 @@ do_backup() {
     archive_basename=$(basename "$output_archive" | sed 's/\.tar\.gz$//')
 
     # Create a temporary staging area
-    local staging_dir
     staging_dir=$(mktemp -d)
 
     # Ensure staging directory is cleaned up on exit
@@ -119,7 +118,7 @@ do_restore() {
     # Get the name of the top-level directory inside the archive
     # We take the first line, and strip any trailing slashes
     local top_dir
-    top_dir=$(tar -tf "$archive_file" | head -n 1 | sed 's|/$$||')
+    top_dir=$(tar -tf "$archive_file" | head -n 1 | sed 's|/||')
     
     if [[ -z "$top_dir" ]]; then
         error_exit "Archive seems to be empty or invalid."
