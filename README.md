@@ -166,6 +166,14 @@ Category is matched against `categories.yaml` (exact match first, then prefix).
 
 Example: `/income 3000 T 2026-03 Salary`
 
+The name is checked against `categories.yaml`. A name that matches **two or more
+different categories** is ambiguous, so the entry is rejected with an error
+naming the conflicting categories:
+
+- `/in 3000 Salary` — accepted
+- `/in 3000 Rent` — accepted (`rent` matches a single category, `r`)
+- `/in 3000 Rent Food` — **rejected**: `rent` → `r` and `food` → `F` conflict
+
 ### categories.yaml
 
 Edit to add or rename categories. Each entry needs `abbrev` (stored in records) and `keywords` (matched in messages):

@@ -23,7 +23,7 @@ import io
 import os
 import re
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 import shutil
@@ -277,7 +277,18 @@ def _build_balance_menu(
             else:
                 lines.append("Total: {}".format(_format_rub_total(total_rub)))
 
-    rows.append([InlineKeyboardButton("\u2713 Done", callback_data="balance_done")])
+    # Month navigation
+    curr_dt = datetime.strptime(month, "%Y-%m")
+    prev_dt = (curr_dt.replace(day=1) - timedelta(days=1)).replace(day=1)
+    next_dt = (curr_dt.replace(day=1) + timedelta(days=32)).replace(day=1)
+    prev_month = prev_dt.strftime("%Y-%m")
+    next_month = next_dt.strftime("%Y-%m")
+
+    rows.append([
+        InlineKeyboardButton("←", callback_data=f"balance_month_nav:{prev_month}"),
+        InlineKeyboardButton("→", callback_data=f"balance_month_nav:{next_month}")
+    ])
+    rows.append([InlineKeyboardButton("✓ Done", callback_data="balance_done")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
@@ -561,7 +572,7 @@ async def owner_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     store: Storage = ctx.bot_data["store"]
     month = store.get_current_month()
-    from datetime import datetime
+    from datetime import datetime, timedelta
     month_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
     await update.message.reply_text(
         f"Active month: *{month_label}*\n\n"
@@ -1221,8 +1232,13 @@ async def cb_balance_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     ctx.user_data.pop("balance", None)
     await query.edit_message_text("✅ Done.")
 
-
-# ── income handlers ───────────────────────────────────────────────────────────
+async def cb_balance_month_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    month = query.data.split(":")[1]
+    store = ctx.bot_data["store"]
+    text, markup = await _build_balance_menu_from_store(store, month)
+    await query.edit_message_text(text, reply_markup=markup)
 
 async def cmd_income(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Record income if text follows the command; show error otherwise."""
@@ -1832,6 +1848,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_balance_remove_cancel, pattern=r"^balance_remove_cancel$"))
     app.add_handler(CallbackQueryHandler(cb_balance_back,          pattern=r"^balance_back$"))
     app.add_handler(CallbackQueryHandler(cb_balance_done,          pattern=r"^balance_done$"))
+    app.add_handler(CallbackQueryHandler(cb_balance_month_nav, pattern=r"^balance_month_nav:"))
     app.add_handler(CallbackQueryHandler(cb_balance_tsv,           pattern=r"^balance_tsv$"))
     app.add_handler(CallbackQueryHandler(cb_balance_ccy_pick,      pattern=r"^balance_ccy_pick:"))
     app.add_handler(CallbackQueryHandler(cb_balance_ccy_other,     pattern=r"^balance_ccy_other:"))

@@ -204,7 +204,7 @@ class Storage:
             con.execute("DELETE FROM expenses")
             con.execute("DELETE FROM incomes")
 
-    def delete_last_n_records(self, month: str, n: int) -> list:
+def delete_last_n_records(self, month: str, n: int) -> list:
         if n <= 0:
             return []
         with self._connect() as con:
@@ -221,6 +221,25 @@ class Storage:
             placeholders = ",".join("?" for _ in ids)
             con.execute(
                 f"DELETE FROM expenses WHERE id IN ({placeholders})", ids
+            )
+        return deleted
+
+    def delete_last_n_income_records(self, month: str, n: int) -> list:
+        if n <= 0:
+            return []
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, amount, taxable, name FROM incomes WHERE month = ? ORDER BY id DESC LIMIT ?",
+                (month, n),
+            ).fetchall()
+            if not rows:
+                return []
+            # Return in insertion order (reverse of DESC order)
+            deleted = [(a, t, n_name) for _, a, t, n_name in reversed(rows)]
+            ids = [r[0] for r in rows]
+            placeholders = ",".join("?" for _ in ids)
+            con.execute(
+                f"DELETE FROM incomes WHERE id IN ({placeholders})", ids
             )
         return deleted
 

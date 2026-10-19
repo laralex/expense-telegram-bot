@@ -24,6 +24,10 @@ class UnclearCategoryError(ParseError):
     """Raised when a title is present but no category could be determined."""
 
 
+class ConflictingCategoryError(ParseError):
+    """Raised when the input matches more than one category."""
+
+
 def load_categories(path) -> list[tuple[str, list[str]]]:
     """Load categories.yaml and return list of (abbrev, keywords) tuples."""
     with open(path, "r", encoding="utf-8") as fh:
@@ -72,13 +76,58 @@ def _match_category(tokens: list[str], categories: list[tuple[str, list[str]]]) 
     return None, None
 
 
-def parse_income(text: str, current_month: str) -> tuple[float, bool, str, str]:
+def _match_all_categories(
+    tokens: list[str],
+    categories: list[tuple[str, list[str]]],
+) -> list[tuple[str, str, str]]:
+    """
+    Collect every category the tokens could belong to.
+
+    Returns a list of (token, abbrev, keyword) triples. For each token an exact
+    match wins over a prefix match — the same priority the payment parser
+    uses. A token that matches several categories is reported for each of
+    them, so the caller can spot a conflict.
+    """
+    matches: list[tuple[str, str, str]] = []
+    for token in tokens:
+        token_lower = token.lower()
+
+        exact: list[tuple[str, str, str]] = []
+        for abbrev, keywords in categories:
+            for kw in keywords:
+                if token_lower == kw.lower():
+                    exact.append((token, abbrev, kw))
+        if exact:
+            matches.extend(exact)
+            continue
+
+        if len(token) < 3:
+            continue
+        for abbrev, keywords in categories:
+            for kw in keywords:
+                if len(kw) < 3:
+                    continue
+                if token_lower.startswith(kw.lower()) or kw.lower().startswith(token_lower):
+                    matches.append((token, abbrev, kw))
+    return matches
+
+
+def parse_income(
+    text: str,
+    current_month: str,
+    categories: list[tuple[str, list[str]]] | None = None,
+) -> tuple[float, bool, str, str]:
     """
     Parse an income message: '<sum> <name>' with optional 'T' flag and optional 'YYYY-MM'.
 
     Returns (amount, taxable, year_month, name).
     taxable=True means 'T' was present — income increases the tax base.
     year_month defaults to current_month when not supplied in the text.
+
+    When categories are supplied the name is checked against them: a name that
+    matches two or more different categories is ambiguous and is rejected with
+    ConflictingCategoryError. A name matching a single category (or none) is
+    accepted as is.
     """
     if not text or not text.strip():
         raise ParseError("Empty input")
@@ -115,6 +164,14 @@ def parse_income(text: str, current_month: str) -> tuple[float, bool, str, str]:
 
     tokens.remove(amount_token)
     name = " ".join(tokens)
+
+    if categories:
+        matches = _match_all_categories(tokens, categories)
+        if len({abbrev for _token, abbrev, _kw in matches}) > 1:
+            raise ConflictingCategoryError(
+                _conflicting_category_message(name, matches)
+            )
+
     return amount, taxable, month, name
 
 
@@ -122,6 +179,21 @@ def _category_labels(categories: list[tuple[str, list[str]]]) -> str:
     """Human-readable list of known categories, e.g. 'F, h, TT, ..., un'."""
     labels = [abbrev if abbrev else "un" for abbrev, _ in categories]
     return ", ".join(labels)
+
+
+def _conflicting_category_message(
+    name: str,
+    matches: list[tuple[str, str, str]],
+) -> str:
+    """Build the error message for a name that matches several categories."""
+    details = ", ".join(
+        f"{token!r} → {abbrev if abbrev else 'un'}"
+        for token, abbrev, _kw in matches
+    )
+    return (
+        f"Conflicting categories in {name!r} — the name matches more than one "
+        f"category: {details}. Use a name that doesn't mix category keywords."
+    )
 
 
 def _unclear_category_message(
