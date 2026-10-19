@@ -130,13 +130,21 @@ Tests do not need `BOT_TOKEN` or `OWNER_ID`.
 
 ## Data storage
 
-Records are written to `data/` (gitignored), relative to the working directory:
+Records are stored in a single SQLite database file `data/storage.db` (gitignored).
 
-| File | Contents |
-|------|----------|
-| `data/YYYY-MM.txt` | Expense records for that month |
-| `data/income-YYYY-MM.txt` | Income records for that month |
-| `data/state.json` | Currently active month |
+The database contains five tables: `state`, `expenses`, `incomes`, `balances`, and `name_registry`.
+
+### Migrating from legacy file-based storage
+
+If you have an existing `data/` folder (with legacy files like `state.json`, `outcome-*.txt`, `income-*.txt`, `balances.json`), convert it to SQLite:
+
+```sh
+python3 migrate_backup.py data/
+```
+
+This reads all legacy files from the given directory and writes an SQLite database (`data/storage.db`). The resulting database can be placed in `data/` of a new deployment and will be automatically used by the bot.
+
+The bot does not auto-import legacy files on startup — run this script first, then place the generated `storage.db` in the `data/` folder of the deployment.
 
 ---
 

@@ -1,7 +1,6 @@
 """Tests for storage.py — uses a temp dir per test, no real data/ dir touched."""
 
 import pytest
-import json
 from pathlib import Path
 from datetime import date
 from storage import Storage
@@ -31,11 +30,12 @@ def test_persistence_across_instances(tmp_path):
     assert s2.get_current_month() == "2024-06"
 
 
-def test_state_file_contents(tmp_path):
-    s = Storage(data_dir=str(tmp_path))
-    s.set_current_month("2026-01")
-    state = json.loads((tmp_path / "state.json").read_text())
-    assert state == {"current_month": "2026-01"}
+def test_state_persists_across_instances(tmp_path):
+    """Setting current_month must be visible to a new Storage instance."""
+    s1 = Storage(data_dir=str(tmp_path))
+    s1.set_current_month("2026-01")
+    s2 = Storage(data_dir=str(tmp_path))
+    assert s2.get_current_month() == "2026-01"
 
 
 # ── append + read ─────────────────────────────────────────────────────────────
@@ -64,11 +64,12 @@ def test_read_nonexistent_month_returns_empty(tmp_store):
     assert tmp_store.read_month("2000-01") == []
 
 
-def test_record_file_format(tmp_path):
+def test_record_format_round_trip(tmp_path):
+    """append_record + read_month must return the expected tuple."""
     s = Storage(data_dir=str(tmp_path))
     s.append_record("2026-03", "F", 150.0, "Lunch")
-    lines = (tmp_path / "outcome-2026-03.txt").read_text().strip().splitlines()
-    assert lines[0] == "2026-03-01|F|Lunch|150.0"
+    records = s.read_month("2026-03")
+    assert records[0] == ("2026-03-01", "F", "Lunch", "150.0")
 
 
 def test_empty_category_stored(tmp_store):
@@ -116,35 +117,30 @@ def test_delete_all_removes_month_files(tmp_path):
     assert s.read_month("2026-02") == []
 
 
-def test_delete_all_keeps_state_json(tmp_path):
+def test_delete_all_keeps_state(tmp_path):
     s = Storage(data_dir=str(tmp_path))
     s.set_current_month("2026-03")
     s.append_record("2026-03", "F", 100.0, "")
     s.delete_all()
-    # state.json still readable and correct
+    # state (current_month) stays intact
     assert s.get_current_month() == "2026-03"
 
 
 # ── read-modify-write ─────────────────────────────────────────────────────────
 
-def test_set_month_preserves_other_keys(tmp_path):
-    """set_current_month must not destroy other state.json keys."""
-    state_file = tmp_path / "state.json"
-    state_file.write_text('{"expense_format": ["title", "amount"]}')
-    s = Storage(data_dir=str(tmp_path))
-    s.set_current_month("2026-05")
-    state = json.loads(state_file.read_text())
-    assert state["current_month"] == "2026-05"
-    assert state["expense_format"] == ["title", "amount"]
+def test_set_month_preserves_other_keys(tmp_store):
+    """set_current_month must not destroy other state keys."""
+    tmp_store.set_format("expense", ["title", "amount"])
+    tmp_store.set_current_month("2026-05")
+    assert tmp_store.get_current_month() == "2026-05"
+    assert tmp_store.get_format("expense") == ["title", "amount"]
 
 
-def test_get_month_with_format_only_state(tmp_path):
-    """get_current_month must not raise if state.json has no current_month key."""
-    state_file = tmp_path / "state.json"
-    state_file.write_text('{"expense_format": ["title", "amount"]}')
-    s = Storage(data_dir=str(tmp_path))
+def test_get_month_with_other_state_keys(tmp_store):
+    """get_current_month falls back to today when current_month is not set."""
+    tmp_store.set_format("expense", ["title", "amount"])
     expected = date.today().strftime("%Y-%m")
-    assert s.get_current_month() == expected
+    assert tmp_store.get_current_month() == expected
 
 
 # ── format ────────────────────────────────────────────────────────────────────
@@ -380,7 +376,7 @@ def test_remove_balance_name_prunes_empty_months(tmp_store):
     tmp_store.add_balance_name("Savings")
     tmp_store.set_balance("2026-03", "Savings", 5000.0)
     tmp_store.remove_balance_name("Savings", keep_history=False)
-    assert "2026-03" not in tmp_store._read_balances()["months"]
+    assert tmp_store.get_balance_month("2026-03") == {}
 
 
 def test_remove_balance_name_noop_for_unknown(tmp_store):
@@ -500,21 +496,6 @@ def test_list_missing_rates_omits_when_rate_set(tmp_store):
     tmp_store.set_rate("USD", "2026-03", 92.0)
     assert tmp_store.list_missing_rates("2026-03") == []
 
-
-def test_legacy_schema_migrates_to_rub(tmp_path):
-    legacy = {
-        "current_names": ["Savings"],
-        "historic_names": ["Savings"],
-        "months": {"2026-03": {"Savings": 5000.0}},
-    }
-    (tmp_path / "balances.json").write_text(json.dumps(legacy), encoding="utf-8")
-    s = Storage(data_dir=str(tmp_path))
-    assert s.get_balance_currency("Savings") == "RUB"
-    # write cycle persists new schema
-    s.set_balance("2026-03", "Savings", 6000.0)
-    reloaded = json.loads((tmp_path / "balances.json").read_text())
-    assert reloaded["currencies"]["Savings"] == "RUB"
-    assert "rates" in reloaded
 
 
 def test_remove_balance_delete_history_removes_currency(tmp_store):

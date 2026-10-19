@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # backup.sh — Back up runtime data from the deployed expense-tracker-bot
-# Copies data/ and .env from the deploy directory into a timestamped zip archive
-# under ./backup/. Prints the full path to the archive on stdout.
+# Copies data/ (SQLite database) and .env from the deploy directory into a
+# timestamped zip archive under ./backup/. Prints the full path on stdout.
 #
 # Usage: bash backup.sh
 
@@ -22,7 +22,7 @@ fi
 
 mkdir -p "$STAGE"
 
-# data/ — all transaction files, balances, state
+# data/ — SQLite database (storage.db), all transaction data, balances, state
 if [ -d "$DEPLOY_DIR/data" ]; then
     cp -r "$DEPLOY_DIR/data" "$STAGE/data"
     echo "Copied data/" >&2
