@@ -1,1 +1,1 @@
-Must not store temporary files in this project, use temporary system folders for it.
+Must not store temporary files in this project, use temporary system folders for it. No temporary scripts, no temporary logs, no build artifacts

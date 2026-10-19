@@ -28,27 +28,15 @@ cp .env.example .env
 
 ---
 
-## Running locally (venv)
+## Running locally (uv)
+
+Use `uv` for environment management and running the bot.
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# Create and sync environment
+uv sync
 
-# .env is loaded automatically by python-dotenv at startup
-python bot.py
-```
-
-## Running locally (micromamba / conda)
-
-`run_local.sh` targets a conda environment named `bill-tracker-bot`. Adjust the name if yours differs.
-
-```sh
-# create once
-micromamba create -n bill-tracker-bot python=3.11
-micromamba run -n bill-tracker-bot pip install -r requirements.txt
-
-# start (kills any existing instance first)
+# Start the bot
 bash run_local.sh
 ```
 
@@ -89,7 +77,7 @@ sudo chmod 600 /opt/expense-telegram-bot/.env
 
 The service file uses `EnvironmentFile=/opt/expense-telegram-bot/.env` — systemd injects the variables directly, so `python-dotenv` also picks them up.
 
-### 4. Install and start the service
+### 4. Install and enable systemd service
 
 ```sh
 sudo cp /opt/expense-telegram-bot/expense-tracker.service /etc/systemd/system/
@@ -103,25 +91,24 @@ sudo systemctl status expense-tracker
 ```sh
 sudo systemctl restart expense-tracker   # apply code changes
 sudo systemctl stop expense-tracker
-sudo journalctl -u expense-tracker -f    # live logs
+sudo journalctl -u expense-tracker -f     # live logs
 ```
 
 ---
 
 ## Running tests
 
-Tests require the dev dependencies:
+Run tests using `uv`:
 
 ```sh
-pip install -r requirements-dev.txt
-pytest
+uv run pytest
 ```
 
 To run a specific test file:
 
 ```sh
-pytest tests/test_parser.py
-pytest tests/test_storage.py
+uv run pytest tests/test_parser.py
+uv run pytest tests/test_storage.py
 ```
 
 Tests do not need `BOT_TOKEN` or `OWNER_ID`.
@@ -139,7 +126,7 @@ The database contains five tables: `state`, `expenses`, `incomes`, `balances`, a
 If you have an existing `data/` folder (with legacy files like `state.json`, `outcome-*.txt`, `income-*.txt`, `balances.json`), convert it to SQLite:
 
 ```sh
-python3 migrate_backup.py data/
+python migrate_backup.py data/
 ```
 
 This reads all legacy files from the given directory and writes an SQLite database (`data/storage.db`). The resulting database can be placed in `data/` of a new deployment and will be automatically used by the bot.

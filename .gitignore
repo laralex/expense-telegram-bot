@@ -1,7 +1,36 @@
-data/
+# Ignore everything
+*
+
+# Unignore directories containing tracked files
+!tests/
+
+# Unignore specifically tracked files
+!.gitignore
+!.env.example
+!.python-version
+!AGENTS.md
+!README.md
+!backup.sh
+!bot.py
+!categories.yaml
+!cbr.py
+!config.sh
+!deploy.sh
+!migrate_backup.py
+!parse_tinkoff_bank_report.py
+!parser.py
+!receipt-tracker.service
+!requirements-dev.txt
+!requirements.txt
+!run_local.sh
+!storage.py
+!tests/test_bot_helpers.py
+!tests/test_cbr.py
+!tests/test_parser.py
+!tests/test_storage.py
+
+# Explicitly ignore common non-tracked/sensitive items
 .env
 __pycache__/
 *.pyc
 .pytest_cache/
-docs/
-.worktrees/
