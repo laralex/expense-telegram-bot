@@ -62,7 +62,7 @@ do_backup() {
     # Ensure the output directory exists
     mkdir -p "$(dirname "$output_archive")"
 
-    if tar -czf "$output_archive" "$source_dir"; then
+    if tar -czf "$output_archive" -C "$source_dir" .; then
         echo "Successfully created backup: $output_archive"
     else
         error_exit "Failed to create archive."
