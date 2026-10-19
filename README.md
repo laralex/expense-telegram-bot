@@ -147,7 +147,12 @@ Any plain text message (non-command) is parsed as an expense.
 
 Examples: `12.50 food coffee`, `5 TT bus`, `80`
 
-Category is matched against `categories.yaml` (exact match first, then prefix). Defaults to `F` (food) if no match.
+Category is matched against `categories.yaml` (exact match first, then prefix).
+
+- `80` — amount only, no title → default category `F` (food).
+- `50 F test` — explicit category → `F`, title `test`.
+- `50 test F` — the category may sit anywhere among the words → `F`, title `test`.
+- `50 test` — **rejected**. A title without a category is ambiguous, so the default category is never inferred. The bot replies with a hint that lists the known categories.
 
 ### Income format
 

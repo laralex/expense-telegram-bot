@@ -20,11 +20,15 @@ class ParseError(ValueError):
     pass
 
 
+class UnclearCategoryError(ParseError):
+    """Raised when a title is present but no category could be determined."""
+
+
 def load_categories(path) -> list[tuple[str, list[str]]]:
     """Load categories.yaml and return list of (abbrev, keywords) tuples."""
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
-    return [(entry["abbrev"], [kw for kw in entry["keywords"]]) for entry in data]
+    return [(entry["abbrev"], [str(kw) for kw in entry["keywords"]]) for entry in data]
 
 
 def _try_float(token: str) -> float | None:
@@ -114,12 +118,42 @@ def parse_income(text: str, current_month: str) -> tuple[float, bool, str, str]:
     return amount, taxable, month, name
 
 
-def parse_payment(text: str, categories: list[tuple[str, list[str]]]) -> tuple[str, float, str]:
+def _category_labels(categories: list[tuple[str, list[str]]]) -> str:
+    """Human-readable list of known categories, e.g. 'F, h, TT, ..., un'."""
+    labels = [abbrev if abbrev else "un" for abbrev, _ in categories]
+    return ", ".join(labels)
+
+
+def _unclear_category_message(
+    title: str,
+    amount_token: str,
+    categories: list[tuple[str, list[str]]],
+    default_category: str | None,
+) -> str:
+    """Build the error message for a title that carries no category."""
+    msg = (
+        f"Category is unclear for {title!r} — spell it out, "
+        f"e.g. '{amount_token} F {title}'"
+    )
+    labels = _category_labels(categories)
+    if labels:
+        msg += f". Known categories: {labels}"
+    if default_category:
+        msg += f" (or send only the amount to use the default category '{default_category}')"
+    return msg
+
+
+def parse_payment(text: str, categories: list[tuple[str, list[str]]], default_category: str | None = None) -> tuple[str, float, str]:
     """
     Parse a payment message.
 
     Returns (category_abbrev, amount, title).
     Raises ParseError on invalid input.
+
+    The default category is applied only when the message holds nothing but the
+    amount (e.g. '150'). A message that carries a title but no recognisable
+    category (e.g. '50 coffee') is rejected with UnclearCategoryError — the
+    category is never guessed.
     """
     if not text or not text.strip():
         raise ParseError("Empty input")
@@ -151,8 +185,18 @@ def parse_payment(text: str, categories: list[tuple[str, list[str]]]) -> tuple[s
     if matched_token is not None:
         remaining.remove(matched_token)
         category = abbrev
+        title = " ".join(remaining)
+    elif not remaining:
+        # Amount only — fall back to the default category.
+        if default_category is None:
+            raise ParseError(f"No category given in: {text!r}")
+        category = default_category
+        title = ""
     else:
-        raise ParseError(f"No matching category found for: {', '.join(remaining) or 'the input'}")
+        # Title without a category — refuse to guess.
+        title = " ".join(remaining)
+        raise UnclearCategoryError(
+            _unclear_category_message(title, amount_token, categories, default_category)
+        )
 
-    title = " ".join(remaining)
     return category, amount, title
