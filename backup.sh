@@ -117,49 +117,49 @@ do_restore() {
     fi
 
     # Get the name of the top-level directory inside the archive
+    # We take the first line, and strip any trailing slashes
     local top_dir
-    top_dir=$(tar -tf "$archive_file" | head -n 1 | sed 's/\///g; s/://g' | sed 's/\///' | sed 's/\/$//')
+    top_dir=$(tar -tf "$archive_file" | head -n 1 | sed 's|/$$||')
     
     if [[ -z "$top_dir" ]]; then
         error_exit "Archive seems to be empty or invalid."
     fi
 
-    # Create target directory if it doesn't exist (just in case)
-    mkdir -p "$target_dir"
-
     echo "[INFO] Checking for conflicts in '$target_dir'..."
 
     local conflicts=()
-    # Iterate through files listed in the archive (excluding the directory entry itself)
-    # We want to check paths that WOULD be created in target_dir
-    # We use a subshell and read to handle spaces in filenames
+    # Iterate through all entries in the archive
     while read -r line; do
-        # Skip empty lines
         [[ -z "$line" ]] && continue
         
-        # Remove the top-level directory name and leading slash
-        local relative_path
-        relative_path=$(echo "$line" | sed "s|^$top_dir/||")
-        
-        # Skip if it's just the directory name itself
-        if [[ "$relative_path" == "$top_dir" ]] || [[ -z "$relative_path" ]]; then
+        # Skip if the entry is just the top-level directory itself
+        # Handle both "top_dir/" and "top_dir"
+        if [[ "$line" == "$top_dir/" ]] || [[ "$line" == "$top_dir" ]]; then
             continue
         fi
 
+        # Strip the top-level directory prefix to get the relative path
+        # This handles "top_dir/path/to/file" -> "path/to/file"
+        local relative_path
+        relative_path=$(echo "$line" | sed "s|^$top_dir/||")
+        
         local check_path="$target_dir/$relative_path"
         if [[ -e "$check_path" ]]; then
             conflicts+=("$relative_path")
         fi
-    done < <(tar -tf "$archive_file" | grep -v "^$top_dir")
+    done < <(tar -tf "$archive_file")
 
     if [[ ${#conflicts[@]} -gt 0 ]]; then
         echo -e "${RED}ERROR: Restoration aborted due to the following conflicts:${NC}"
-        # Remove duplicate conflicts (e.g., if a directory and a file are both listed)
+        # Remove duplicate conflicts and sort them
         printf '%s\n' "${conflicts[@]}" | sort | uniq | while read -r conflict; do
             echo "  - $conflict"
         done
         error_exit "Conflicts detected. Use a different target directory or clear the current one."
     fi
+
+    # Create target directory if it doesn't exist
+    mkdir -p "$target_dir"
 
     # Extracting using --strip-components=1 to remove the top-level folder inside the archive
     if tar -xzf "$archive_file" -C "$target_dir" --strip-components=1; then
