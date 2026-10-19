@@ -1,46 +1,139 @@
-#!/usr/bin/env bash
-# backup.sh — Back up runtime data from the deployed expense-tracker-bot
-# Copies data/ (SQLite database) and .env from the deploy directory into a
-# timestamped zip archive under ./backup/. Prints the full path on stdout.
-#
-# Usage: bash backup.sh
-
+#!/bin/bash
 set -euo pipefail
 
-DEPLOY_DIR="/opt/expense-tracker-bot"
-BACKUP_ROOT="./backup"
-TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-TMPDIR="$(mktemp -d)"
-STAGE="$TMPDIR/expense-tracker-backup-$TIMESTAMP"
+# --- Configuration & Defaults ---
+VERBOSE=false
 
-trap 'rm -rf "$TMPDIR"' EXIT
+# Default paths (User-specified defaults)
+DEFAULT_SOURCE_DIR="/opt/expense-telegram-bot/data"
+DEFAULT_ARCHIVE="~/expense-telegram-bot-backup.tar.gz"
+DEFAULT_RESTORE_TARGET="/opt/expense-telegram-bot/data"
 
-if [ ! -d "$DEPLOY_DIR" ]; then
-    echo "Error: deploy directory $DEPLOY_DIR does not exist" >&2
+# Colors
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+YELLOW='\033[1;33m'
+
+# --- Helper Functions ---
+show_help() {
+    cat <<EOF
+Usage: $(basename "$0") <command> [options]
+
+Commands:
+  backup    Create an archive from a directory
+  restore   Restore a directory from an archive
+
+Commands use default paths:
+  backup: Source=$DEFAULT_SOURCE_DIR, Archive=$DEFAULT_ARCHIVE
+  restore: Archive=$DEFAULT_ARCHIVE, Target=$DEFAULT_RESTORE_TARGET
+
+Options:
+  -h, --help        Display this help message and exit
+  -v, --verbose     Enable detailed output
+EOF
+}
+
+error_exit() {
+    echo -e "${RED}ERROR: $1${NC}" >&2
     exit 1
-fi
+}
 
-mkdir -p "$STAGE"
+log() {
+    if [[ "$VERBOSE" == true ]]; then
+        echo "[INFO] $1"
+    fi
+}
 
-# data/ — SQLite database (storage.db), all transaction data, balances, state
-if [ -d "$DEPLOY_DIR/data" ]; then
-    cp -r "$DEPLOY_DIR/data" "$STAGE/data"
-    echo "Copied data/" >&2
-else
-    echo "Warning: $DEPLOY_DIR/data not found, skipping" >&2
-fi
+# --- Command Implementations ---
+do_backup() {
+    local source_dir="$DEFAULT_SOURCE_DIR"
+    local output_archive="$DEFAULT_ARCHIVE"
 
-# .env — bot token and owner ID
-if [ -f "$DEPLOY_DIR/.env" ]; then
-    cp "$DEPLOY_DIR/.env" "$STAGE/.env"
-    echo "Copied .env" >&2
-else
-    echo "Warning: $DEPLOY_DIR/.env not found, skipping" >&2
-fi
+    log "Starting backup of '$source_dir' into '$output_archive'..."
 
-mkdir -p "$BACKUP_ROOT"
-ZIP_FILE="$(cd "$BACKUP_ROOT" && pwd)/backup-$TIMESTAMP.zip"
+    if [[ ! -d "$source_dir" ]]; then
+        error_exit "Source directory '$source_dir' does not exist."
+    fi
 
-(cd "$TMPDIR" && zip -qr "$ZIP_FILE" "$(basename "$STAGE")")
+    # Conflict check: Archive already exists
+    if [[ -f "$output_archive" ]]; then
+        error_exit "Archive '$output_archive' already exists."
+    fi
 
-echo "$ZIP_FILE"
+    # Ensure the output directory exists
+    mkdir -p "$(dirname "$output_archive")"
+
+    if tar -czf "$output_archive" "$source_dir"; then
+        echo "Successfully created backup: $output_archive"
+    else
+        error_exit "Failed to create archive."
+    fi
+}
+
+do_restore() {
+    local archive_file="$DEFAULT_ARCHIVE"
+    local target_dir="$DEFAULT_RESTORE_TARGET"
+
+    log "Starting restoration of '$archive_file' to '$target_dir'..."
+
+    if [[ ! -f "$archive_file" ]]; then
+        error_exit "Archive file '$archive_file' does not exist."
+    fi
+
+    # Conflict check: Target directory is not empty
+    if [[ -d "$target_dir" ]] && [[ -n "$(ls -A "$target_dir" 2>/dev/null)" ]]; then
+        error_exit "Target directory '$target_dir' is not empty."
+    fi
+
+    # Create target directory if it doesn't exist
+    mkdir -p "$target_dir"
+
+    # Extracting
+    if tar -xzf "$archive_file" -C "$target_dir"; then
+        echo "Successfully restored archive to '$target_dir'."
+    else
+        error_exit "Failed to restore archive."
+    fi
+}
+
+# --- Main Entry Point ---
+
+COMMAND=""
+
+# Manual flag parsing
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        backup|restore)
+            COMMAND="$1"
+            shift
+            break
+            ;;
+        *)
+            error_exit "Unknown command or option: $1. Use --help for usage."
+            ;;
+    esac
+done
+
+case "$COMMAND" in
+    backup)
+        do_backup
+        ;;
+    restore)
+        do_restore
+        ;;
+    *)
+        if [[ -z "$COMMAND" ]]; then
+            show_help
+        else
+            error_exit "Unknown command: $COMMAND"
+        fi
+        ;;
+esac

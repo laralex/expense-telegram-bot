@@ -152,7 +152,7 @@ def parse_payment(text: str, categories: list[tuple[str, list[str]]]) -> tuple[s
         remaining.remove(matched_token)
         category = abbrev
     else:
-        category = "F"  # hardcoded default: food
+        raise ParseError(f"No matching category found for: {', '.join(remaining) or 'the input'}")
 
     title = " ".join(remaining)
     return category, amount, title
