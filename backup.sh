@@ -18,6 +18,7 @@ DEFAULT_RESTORE_TARGET="$(dirname "$BACKUP_DATA_DIR")"
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
 
 # --- Helper Functions ---
 show_help() {
@@ -115,12 +116,54 @@ do_restore() {
         error_exit "Archive file '$archive_file' does not exist."
     fi
 
-    # Create target directory if it doesn't exist
+    # Get the name of the top-level directory inside the archive
+    local top_dir
+    top_dir=$(tar -tf "$archive_file" | head -n 1 | sed 's/\///g; s/://g' | sed 's/\///' | sed 's/\/$//')
+    
+    if [[ -z "$top_dir" ]]; then
+        error_exit "Archive seems to be empty or invalid."
+    fi
+
+    # Create target directory if it doesn't exist (just in case)
     mkdir -p "$target_dir"
+
+    echo "[INFO] Checking for conflicts in '$target_dir'..."
+
+    local conflicts=()
+    # Iterate through files listed in the archive (excluding the directory entry itself)
+    # We want to check paths that WOULD be created in target_dir
+    # We use a subshell and read to handle spaces in filenames
+    while read -r line; do
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+        
+        # Remove the top-level directory name and leading slash
+        local relative_path
+        relative_path=$(echo "$line" | sed "s|^$top_dir/||")
+        
+        # Skip if it's just the directory name itself
+        if [[ "$relative_path" == "$top_dir" ]] || [[ -z "$relative_path" ]]; then
+            continue
+        fi
+
+        local check_path="$target_dir/$relative_path"
+        if [[ -e "$check_path" ]]; then
+            conflicts+=("$relative_path")
+        fi
+    done < <(tar -tf "$archive_file" | grep -v "^$top_dir")
+
+    if [[ ${#conflicts[@]} -gt 0 ]]; then
+        echo -e "${RED}ERROR: Restoration aborted due to the following conflicts:${NC}"
+        # Remove duplicate conflicts (e.g., if a directory and a file are both listed)
+        printf '%s\n' "${conflicts[@]}" | sort | uniq | while read -r conflict; do
+            echo "  - $conflict"
+        done
+        error_exit "Conflicts detected. Use a different target directory or clear the current one."
+    fi
 
     # Extracting using --strip-components=1 to remove the top-level folder inside the archive
     if tar -xzf "$archive_file" -C "$target_dir" --strip-components=1; then
-        echo "Successfully restored archive to '$target_dir'."
+        echo -e "${GREEN}Successfully restored archive to '$target_dir'.${NC}"
     else
         error_exit "Failed to restore archive. Ensure it contains a single root folder."
     fi
