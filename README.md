@@ -12,12 +12,13 @@ A personal Telegram bot for logging expenses and income by month.
 
 ## Environment variables
 
-The bot reads two variables at startup:
+The bot reads these variables at startup:
 
 | Variable | Description |
 |----------|-------------|
 | `BOT_TOKEN` | Telegram bot token from @BotFather |
-| `OWNER_ID` | Your numeric Telegram user ID — all other users are silently rejected |
+| `USER_IDS` | Comma-separated Telegram user IDs allowed to use the bot — each user gets a private data directory (`data/<user_id>/`) and other users are silently rejected |
+| `OWNER_ID` | Legacy single-user variable — still accepted and merged into `USER_IDS` |
 
 `.env` is gitignored. Copy the example and fill it in:
 
@@ -71,7 +72,7 @@ ExecStart=/opt/expense-telegram-bot/.venv/bin/python bot.py
 
 ```sh
 sudo cp .env.example /opt/expense-telegram-bot/.env
-sudo nano /opt/expense-telegram-bot/.env   # fill in BOT_TOKEN and OWNER_ID
+sudo nano /opt/expense-telegram-bot/.env   # fill in BOT_TOKEN and USER_IDS
 sudo chmod 600 /opt/expense-telegram-bot/.env
 ```
 
@@ -111,7 +112,7 @@ uv run pytest tests/test_parser.py
 uv run pytest tests/test_storage.py
 ```
 
-Tests do not need `BOT_TOKEN` or `OWNER_ID`.
+Tests do not need `BOT_TOKEN`, `OWNER_ID` or `USER_IDS`.
 
 ---
 

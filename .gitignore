@@ -28,6 +28,7 @@
 !tests/test_cbr.py
 !tests/test_erase.py
 !tests/test_income.py
+!tests/test_multiuser.py
 !tests/test_parser.py
 !tests/test_storage.py
 
