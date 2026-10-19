@@ -1,20 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-if [[ ! -f .env ]]; then
-    echo "ERROR: .env file not found. Please create it first." >&2
+if [[ ! -f config.sh ]]; then
+    echo "ERROR: config.sh not found. Please create it first." >&2
     exit 1
 fi
 
-source .env
-
-if [[ -z "${BACKUP_DATA_DIR:-}" ]]; then
-    echo "ERROR: BACKUP_DATA_DIR is not defined in .env" >&2
-    exit 1
-fi
+source config.sh
 
 # --- Configuration & Defaults ---
-# Source and target paths are taken from .env
+# Source and target paths are taken from config.sh
 DEFAULT_SOURCE_DIR="$BACKUP_DATA_DIR"
 DEFAULT_RESTORE_TARGET="$BACKUP_DATA_DIR"
 
@@ -32,7 +27,7 @@ Commands:
   backup <archive_path>  Create an archive from the source directory
   restore <archive_path> Restore the source directory from the archive
 
-Commands use source directory from .env:
+Commands use source directory from config.sh:
   backup: Source=$DEFAULT_SOURCE_DIR
   restore: Target=$DEFAULT_RESTORE_TARGET
 

@@ -5,17 +5,12 @@
 
 set -euo pipefail
 
-if [[ ! -f .env ]]; then
-    echo "ERROR: .env file not found. Please create it first." >&2
+if [[ ! -f config.sh ]]; then
+    echo "ERROR: config.sh not found. Please create it first." >&2
     exit 1
 fi
 
-source .env
-
-if [[ -z "${DEPLOY_DIR:-}" ]]; then
-    echo "ERROR: DEPLOY_DIR is not defined in .env" >&2
-    exit 1
-fi
+source config.sh
 
 SERVICE_FILE="receipt-tracker.service"
 VENV="$DEPLOY_DIR/.venv"
