@@ -65,16 +65,37 @@ do_backup() {
     # Ensure the output directory exists
     mkdir -p "$(dirname "$output_archive")"
 
-    # Prepare files to include
-    local files_to_include=("$data_dirname")
+    # Get base name of archive (e.g., backup.tar.gz -> backup)
+    local archive_basename
+    archive_basename=$(basename "$output_archive" | sed 's/\.tar\.gz$//')
+
+    # Create a temporary staging area
+    local staging_dir
+    staging_dir=$(mktemp -d)
+
+    # Ensure staging directory is cleaned up on exit
+    trap 'rm -rf "$staging_dir"' EXIT
+
+    # Create the subfolder in staging area
+    local archive_content_dir="$staging_dir/$archive_basename"
+    mkdir -p "$archive_content_dir"
+
+    # Copy files to staging area
     if [[ -f "$service_root/.env" ]]; then
-        files_to_include=(".env" "${files_to_include[@]}")
+        cp "$service_root/.env" "$archive_content_dir/"
     else
         echo -e "${YELLOW}[WARN] .env not found in $service_root. Only $data_dirname/ will be included.${NC}"
     fi
 
-    if tar -czf "$output_archive" -C "$service_root" "${files_to_include[@]}"; then
-        echo "Successfully created backup: $output_archive"
+    if [[ -d "$source_dir" ]]; then
+        cp -r "$source_dir" "$archive_content_dir/"
+    else
+        error_exit "Source directory '$source_dir' does not exist."
+    fi
+
+    # Create the archive from the staging directory
+    if tar -czf "$output_archive" -C "$staging_dir" "$archive_basename"; then
+        echo "Successfully created backup: $output_archive (contains /$archive_basename/)"
     else
         error_exit "Failed to create archive."
     fi
@@ -94,14 +115,14 @@ do_restore() {
         error_exit "Archive file '$archive_file' does not exist."
     fi
 
-    # We allow overwriting files in the target directory during restore
+    # Create target directory if it doesn't exist
     mkdir -p "$target_dir"
 
-    # Extracting
-    if tar -xzf "$archive_file" -C "$target_dir"; then
+    # Extracting using --strip-components=1 to remove the top-level folder inside the archive
+    if tar -xzf "$archive_file" -C "$target_dir" --strip-components=1; then
         echo "Successfully restored archive to '$target_dir'."
     else
-        error_exit "Failed to restore archive."
+        error_exit "Failed to restore archive. Ensure it contains a single root folder."
     fi
 }
 
