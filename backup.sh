@@ -1,13 +1,22 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- Configuration & Defaults ---
-VERBOSE=false
+if [[ ! -f .env ]]; then
+    echo "ERROR: .env file not found. Please create it first." >&2
+    exit 1
+fi
 
-# Default paths (User-specified defaults)
-DEFAULT_SOURCE_DIR="/opt/expense-telegram-bot/data"
-DEFAULT_ARCHIVE="~/expense-telegram-bot-backup.tar.gz"
-DEFAULT_RESTORE_TARGET="/opt/expense-telegram-bot/data"
+source .env
+
+if [[ -z "${BACKUP_DATA_DIR:-}" ]]; then
+    echo "ERROR: BACKUP_DATA_DIR is not defined in .env" >&2
+    exit 1
+fi
+
+# --- Configuration & Defaults ---
+# Source and target paths are taken from .env
+DEFAULT_SOURCE_DIR="$BACKUP_DATA_DIR"
+DEFAULT_RESTORE_TARGET="$BACKUP_DATA_DIR"
 
 # Colors
 RED='\033[0;31m'
@@ -17,19 +26,16 @@ YELLOW='\033[1;33m'
 # --- Helper Functions ---
 show_help() {
     cat <<EOF
-Usage: $(basename "$0") <command> [options]
+Usage: $(basename "$0") <command> [archive_path]
 
 Commands:
-  backup    Create an archive from a directory
-  restore   Restore a directory from an archive
+  backup <archive_path>  Create an archive from the source directory
+  restore <archive_path> Restore the source directory from the archive
 
-Commands use default paths:
-  backup: Source=$DEFAULT_SOURCE_DIR, Archive=$DEFAULT_ARCHIVE
-  restore: Archive=$DEFAULT_ARCHIVE, Target=$DEFAULT_RESTORE_TARGET
+Commands use source directory from .env:
+  backup: Source=$DEFAULT_SOURCE_DIR
+  restore: Target=$DEFAULT_RESTORE_TARGET
 
-Options:
-  -h, --help        Display this help message and exit
-  -v, --verbose     Enable detailed output
 EOF
 }
 
@@ -38,18 +44,16 @@ error_exit() {
     exit 1
 }
 
-log() {
-    if [[ "$VERBOSE" == true ]]; then
-        echo "[INFO] $1"
-    fi
-}
-
 # --- Command Implementations ---
 do_backup() {
     local source_dir="$DEFAULT_SOURCE_DIR"
-    local output_archive="$DEFAULT_ARCHIVE"
+    local output_archive="$1"
 
-    log "Starting backup of '$source_dir' into '$output_archive'..."
+    if [[ -z "$output_archive" ]]; then
+        error_exit "You must specify an archive path for the backup (e.g., ./backup.sh backup my_backup.tar.gz)"
+    fi
+
+    echo "[INFO] Starting backup of '$source_dir' into '$output_archive'..."
 
     if [[ ! -d "$source_dir" ]]; then
         error_exit "Source directory '$source_dir' does not exist."
@@ -71,10 +75,14 @@ do_backup() {
 }
 
 do_restore() {
-    local archive_file="$DEFAULT_ARCHIVE"
+    local archive_file="$1"
     local target_dir="$DEFAULT_RESTORE_TARGET"
 
-    log "Starting restoration of '$archive_file' to '$target_dir'..."
+    if [[ -z "$archive_file" ]]; then
+        error_exit "You must specify an archive path for the restore (e.g., ./backup.sh restore my_backup.tar.gz)"
+    fi
+
+    echo "[INFO] Starting restoration of '$archive_file' to '$target_dir'..."
 
     if [[ ! -f "$archive_file" ]]; then
         error_exit "Archive file '$archive_file' does not exist."
@@ -103,14 +111,6 @@ COMMAND=""
 # Manual flag parsing
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -h|--help)
-            show_help
-            exit 0
-            ;;
-        -v|--verbose)
-            VERBOSE=true
-            shift
-            ;;
         backup|restore)
             COMMAND="$1"
             shift
@@ -124,10 +124,10 @@ done
 
 case "$COMMAND" in
     backup)
-        do_backup
+        do_backup "$@"
         ;;
     restore)
-        do_restore
+        do_restore "$@"
         ;;
     *)
         if [[ -z "$COMMAND" ]]; then

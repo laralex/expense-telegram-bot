@@ -1,16 +1,26 @@
 #!/usr/bin/env bash
-# deploy.sh — Deploy expense-tracker-bot to a VPS
+# deploy.sh — Deploy expense-telegram-bot to a VPS
 # Assumes: repo already cloned, script run from repo root
 # Usage: bash deploy.sh
 
 set -euo pipefail
 
-DEPLOY_DIR="/opt/expense-tracker-bot"
-SERVICE_NAME="expense-tracker"
+if [[ ! -f .env ]]; then
+    echo "ERROR: .env file not found. Please create it first." >&2
+    exit 1
+fi
+
+source .env
+
+if [[ -z "${DEPLOY_DIR:-}" ]]; then
+    echo "ERROR: DEPLOY_DIR is not defined in .env" >&2
+    exit 1
+fi
+
 SERVICE_FILE="receipt-tracker.service"
 VENV="$DEPLOY_DIR/.venv"
 
-FILES=(bot.py cbr.py parser.py storage.py categories.yaml requirements.txt "$SERVICE_FILE" backup.sh)
+FILES=(bot.py cbr.py parser.py storage.py categories.yaml requirements.txt "$SERVICE_FILE")
 
 echo "==> Pulling latest from main"
 git pull origin main

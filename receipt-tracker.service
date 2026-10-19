@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/expense-tracker-bot
-EnvironmentFile=/opt/expense-tracker-bot/.env
+WorkingDirectory=/opt/expense-telegram-bot
+EnvironmentFile=/opt/expense-telegram-bot/.env
 ExecStart=python3 bot.py
 Restart=on-failure
 RestartSec=5

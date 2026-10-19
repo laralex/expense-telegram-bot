@@ -61,14 +61,14 @@ bash run_local.sh
 ### 1. Copy files
 
 ```sh
-sudo mkdir -p /opt/expense-tracker-bot
-sudo cp bot.py parser.py storage.py categories.yaml expense-tracker.service /opt/expense-tracker-bot/
+sudo mkdir -p /opt/expense-telegram-bot
+sudo cp bot.py parser.py storage.py categories.yaml expense-tracker.service /opt/expense-telegram-bot/
 ```
 
 ### 2. Install dependencies
 
 ```sh
-cd /opt/expense-tracker-bot
+cd /opt/expense-telegram-bot
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
@@ -76,23 +76,23 @@ python3 -m venv .venv
 Update `expense-tracker.service` to use the venv:
 
 ```ini
-ExecStart=/opt/expense-tracker-bot/.venv/bin/python bot.py
+ExecStart=/opt/expense-telegram-bot/.venv/bin/python bot.py
 ```
 
 ### 3. Set up the .env file
 
 ```sh
-sudo cp .env.example /opt/expense-tracker-bot/.env
-sudo nano /opt/expense-tracker-bot/.env   # fill in BOT_TOKEN and OWNER_ID
-sudo chmod 600 /opt/expense-tracker-bot/.env
+sudo cp .env.example /opt/expense-telegram-bot/.env
+sudo nano /opt/expense-telegram-bot/.env   # fill in BOT_TOKEN and OWNER_ID
+sudo chmod 600 /opt/expense-telegram-bot/.env
 ```
 
-The service file uses `EnvironmentFile=/opt/expense-tracker-bot/.env` — systemd injects the variables directly, so `python-dotenv` also picks them up.
+The service file uses `EnvironmentFile=/opt/expense-telegram-bot/.env` — systemd injects the variables directly, so `python-dotenv` also picks them up.
 
 ### 4. Install and start the service
 
 ```sh
-sudo cp /opt/expense-tracker-bot/expense-tracker.service /etc/systemd/system/
+sudo cp /opt/expense-telegram-bot/expense-tracker.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now expense-tracker
 sudo systemctl status expense-tracker
