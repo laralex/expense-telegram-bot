@@ -11,7 +11,8 @@ source config.sh
 # --- Configuration & Defaults ---
 # Source and target paths are taken from config.sh
 DEFAULT_SOURCE_DIR="$BACKUP_DATA_DIR"
-DEFAULT_RESTORE_TARGET="$BACKUP_DATA_DIR"
+# Default restore target is now the service root to include .env and data/
+DEFAULT_RESTORE_TARGET="$(dirname "$BACKUP_DATA_DIR")"
 
 # Colors
 RED='\033[0;31m'
@@ -24,12 +25,12 @@ show_help() {
 Usage: $(basename "$0") <command> [archive_path]
 
 Commands:
-  backup <archive_path>  Create an archive from the source directory
-  restore <archive_path> Restore the source directory from the archive
+  backup <archive_path>  Create an archive from the service root (includes .env and data/)
+  restore <archive_path> Restore the service root from the archive
 
-Commands use source directory from config.sh:
-  backup: Source=$DEFAULT_SOURCE_DIR
-  restore: Target=$DEFAULT_RESTORE_TARGET
+Commands use:
+  backup source: $DEFAULT_SOURCE_DIR (plus .env)
+  restore target: $DEFAULT_RESTORE_TARGET
 
 EOF
 }
@@ -42,16 +43,18 @@ error_exit() {
 # --- Command Implementations ---
 do_backup() {
     local source_dir="$DEFAULT_SOURCE_DIR"
+    local service_root="$(dirname "$source_dir")"
+    local data_dirname=$(basename "$source_dir")
     local output_archive="$1"
 
     if [[ -z "$output_archive" ]]; then
         error_exit "You must specify an archive path for the backup (e.g., ./backup.sh backup my_backup.tar.gz)"
     fi
 
-    echo "[INFO] Starting backup of '$source_dir' into '$output_archive'..."
+    echo "[INFO] Starting backup of service root (including $data_dirname/ and .env) into '$output_archive'..."
 
-    if [[ ! -d "$source_dir" ]]; then
-        error_exit "Source directory '$source_dir' does not exist."
+    if [[ ! -d "$service_root" ]]; then
+        error_exit "Service root '$service_root' does not exist."
     fi
 
     # Conflict check: Archive already exists
@@ -62,7 +65,15 @@ do_backup() {
     # Ensure the output directory exists
     mkdir -p "$(dirname "$output_archive")"
 
-    if tar -czf "$output_archive" -C "$source_dir" .; then
+    # Prepare files to include
+    local files_to_include=("$data_dirname")
+    if [[ -f "$service_root/.env" ]]; then
+        files_to_include=(".env" "${files_to_include[@]}")
+    else
+        echo -e "${YELLOW}[WARN] .env not found in $service_root. Only $data_dirname/ will be included.${NC}"
+    fi
+
+    if tar -czf "$output_archive" -C "$service_root" "${files_to_include[@]}"; then
         echo "Successfully created backup: $output_archive"
     else
         error_exit "Failed to create archive."
@@ -83,12 +94,7 @@ do_restore() {
         error_exit "Archive file '$archive_file' does not exist."
     fi
 
-    # Conflict check: Target directory is not empty
-    if [[ -d "$target_dir" ]] && [[ -n "$(ls -A "$target_dir" 2>/dev/null)" ]]; then
-        error_exit "Target directory '$target_dir' is not empty."
-    fi
-
-    # Create target directory if it doesn't exist
+    # We allow overwriting files in the target directory during restore
     mkdir -p "$target_dir"
 
     # Extracting
