@@ -65,57 +65,104 @@ class Storage:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._db_path = self._dir / "storage.db"
         self._init_db()
+        self._categories_cache = []
+
+    def _init_db(self) -> None:
+        """Initialize the database schema."""
+        with self._connect() as con:
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    abbrev TEXT UNIQUE NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS category_keywords (
+                    category_id INTEGER NOT NULL,
+                    keyword TEXT NOT NULL,
+                    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+                )
+            """)
+            con.execute("CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT)")
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS expenses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    month TEXT NOT NULL,
+                    date_str TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    title TEXT,
+                    amount REAL NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS incomes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    month TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    taxable INTEGER NOT NULL,
+                    name TEXT NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS name_registry (
+                    name TEXT PRIMARY KEY,
+                    currency TEXT NOT NULL,
+                    is_current INTEGER NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS balances (
+                    month TEXT,
+                    name TEXT,
+                    amount REAL,
+                    currency TEXT,
+                    PRIMARY KEY (month, name)
+                )
+            """)
 
     # ── DB helpers ──────────────────────────────────────────────────────────
 
-    def _init_db(self) -> None:
-        """Create tables and indexes if they don't exist."""
+    def load_categories_to_cache(self) -> None:
         with self._connect() as con:
-            con.executescript("""
-                CREATE TABLE IF NOT EXISTS state (
-                    key   TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
+            rows = con.execute(
+                "SELECT c.name, c.abbrev, GROUP_CONCAT(ck.keyword, ',') "
+                "FROM categories c "
+                "LEFT JOIN category_keywords ck ON c.id = ck.category_id "
+                "GROUP BY c.id"
+            ).fetchall()
+            
+        self._categories_cache = []
+        for name, abbrev, keywords_str in rows:
+            keywords = keywords_str.split(",") if keywords_str else []
+            self._categories_cache.append({
+                "name": name,
+                "abbrev": abbrev,
+                "keywords": keywords
+            })
 
-                CREATE TABLE IF NOT EXISTS expenses (
-                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-                    month    TEXT NOT NULL,
-                    date_str TEXT NOT NULL,
-                    category TEXT NOT NULL DEFAULT '',
-                    title    TEXT NOT NULL DEFAULT '',
-                    amount   REAL NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_expenses_month
-                    ON expenses(month);
-
-                CREATE TABLE IF NOT EXISTS incomes (
-                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-                    month    TEXT NOT NULL,
-                    amount   REAL NOT NULL,
-                    taxable  INTEGER NOT NULL,  -- 0 or 1
-                    name     TEXT NOT NULL DEFAULT ''
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_incomes_month
-                    ON incomes(month);
-
-                CREATE TABLE IF NOT EXISTS balances (
-                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-                    month    TEXT NOT NULL,
-                    name     TEXT NOT NULL,
-                    amount   REAL NOT NULL,
-                    currency TEXT NOT NULL DEFAULT 'RUB',
-                    UNIQUE(month, name)
-                );
-
-                -- Name registry (current + historic, per-name currency)
-                CREATE TABLE IF NOT EXISTS name_registry (
-                    name     TEXT PRIMARY KEY,
-                    currency TEXT NOT NULL DEFAULT 'RUB',
-                    is_current INTEGER NOT NULL DEFAULT 0
-                );
-            """)
+    def bootstrap_categories_from_yaml(self, categories_data: list[dict]) -> None:
+        with self._connect() as con:
+            for cat in categories_data:
+                name = cat.get("name", cat.get("abbrev", "un"))
+                abbrev = cat.get("abbrev", "un")
+                
+                con.execute(
+                    """
+                    INSERT INTO categories (name, abbrev) 
+                    VALUES (?, ?)
+                    ON CONFLICT(abbrev) DO UPDATE SET name=excluded.name
+                    """,
+                    (name, abbrev)
+                )
+                cat_id = con.execute("SELECT id FROM categories WHERE abbrev = ?", (abbrev,)).fetchone()[0]
+                
+                con.execute("DELETE FROM category_keywords WHERE category_id = ?", (cat_id,))
+                for kw in cat.get("keywords", []):
+                    con.execute(
+                        "INSERT INTO category_keywords (category_id, keyword) VALUES (?, ?)",
+                        (cat_id, kw)
+                    )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -132,7 +179,7 @@ class Storage:
         finally:
             con.close()
 
-    # ── state (key-value) ───────────────────────────────────────────────────
+    # ── state (key-value) ──────────────────────────────────────────────────
 
     def _get_state(self, key: str) -> Optional[str]:
         with self._connect() as con:
@@ -148,7 +195,7 @@ class Storage:
                 (key, value),
             )
 
-    # ── current month ───────────────────────────────────────────────────────
+    # ── current month ──────────────────────────────────────────────────────
 
     def get_current_month(self) -> str:
         val = self._get_state("current_month")
@@ -215,7 +262,6 @@ class Storage:
             ).fetchall()
             if not rows:
                 return []
-            # Return in insertion order (reverse of DESC order)
             deleted = [(d, c, t, s) for _, d, c, t, s in reversed(rows)]
             ids = [r[0] for r in rows]
             placeholders = ",".join("?" for _ in ids)
@@ -235,7 +281,6 @@ class Storage:
             ).fetchall()
             if not rows:
                 return []
-            # Return in insertion order (reverse of DESC order)
             deleted = [(a, bool(t), nm) for _, a, t, nm in reversed(rows)]
             ids = [r[0] for r in rows]
             placeholders = ",".join("?" for _ in ids)
@@ -290,27 +335,6 @@ class Storage:
             ).fetchall()
         return [r[0] for r in rows]
 
-    def delete_income_records_by_index(self, month: str, indices: set) -> int:
-        if not indices:
-            return 0
-        with self._connect() as con:
-            all_ids = [
-                r[0] for r in con.execute(
-                    "SELECT id FROM incomes WHERE month = ? ORDER BY id",
-                    (month,),
-                ).fetchall()
-            ]
-        to_delete = {all_ids[i] for i in indices if i < len(all_ids)}
-        if not to_delete:
-            return 0
-        placeholders = ",".join("?" for _ in to_delete)
-        with self._connect() as con:
-            con.execute(
-                f"DELETE FROM incomes WHERE id IN ({placeholders})",
-                sorted(to_delete),
-            )
-        return len(to_delete)
-
     # ── balances ────────────────────────────────────────────────────────────
 
     def get_balance_names(self) -> list[str]:
@@ -344,7 +368,6 @@ class Storage:
                     "UPDATE name_registry SET currency = ?, is_current = 1 WHERE name = ?",
                     (currency, name),
                 )
-            # if already current → no-op
 
     def remove_balance_name(self, name: str, keep_history: bool) -> None:
         with self._connect() as con:

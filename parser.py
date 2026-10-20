@@ -32,7 +32,7 @@ def load_categories(path) -> list[dict]:
     """Load categories.yaml and return list of dictionaries."""
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
-    return [{"abbrev": entry["abbrev"], "keywords": [str(kw) for kw in entry["keywords"]]} for entry in data]
+    return [{"name": entry["name"], "abbrev": entry["abbrev"], "keywords": [str(kw) for kw in entry["keywords"]]} for entry in data]
 
 
 def _try_float(token: str) -> float | None:
@@ -60,8 +60,8 @@ def _match_category(
     for token in tokens:
         token_lower = token.lower()
         for cat in categories:
-            abbrev = cat["abbrev"]
-            keywords = cat["keywords"]
+            abbrev = cat.get("abbrev", "un")
+            keywords = cat.get("keywords", [])
             for kw in keywords:
                 if token_lower == kw.lower():
                     return token, abbrev
@@ -72,8 +72,8 @@ def _match_category(
             continue
         token_lower = token.lower()
         for cat in categories:
-            abbrev = cat["abbrev"]
-            keywords = cat["keywords"]
+            abbrev = cat.get("abbrev", "un")
+            keywords = cat.get("keywords", [])
             for kw in keywords:
                 if len(kw) < 3:
                     continue
@@ -101,8 +101,8 @@ def _match_all_categories(
 
         exact: list[tuple[str, str, str]] = []
         for cat in categories:
-            abbrev = cat["abbrev"]
-            keywords = cat["keywords"]
+            abbrev = cat.get("abbrev", "un")
+            keywords = cat.get("keywords", [])
             for kw in keywords:
                 if token_lower == kw.lower():
                     exact.append((token, abbrev, kw))
@@ -113,8 +113,8 @@ def _match_all_categories(
         if len(token) < 3:
             continue
         for cat in categories:
-            abbrev = cat["abbrev"]
-            keywords = cat["keywords"]
+            abbrev = cat.get("abbrev", "un")
+            keywords = cat.get("keywords", [])
             for kw in keywords:
                 if len(kw) < 3:
                     continue
@@ -188,7 +188,7 @@ def parse_income(
 
 def _category_labels(categories: list[dict]) -> str:
     """Human-readable list of known categories, e.g. 'F, h, TT, ..., un'."""
-    labels = [cat["abbrev"] if cat["abbrev"] else "un" for cat in categories]
+    labels = [cat.get("abbrev", "un") if cat.get("abbrev") else "un" for cat in categories]
     return ", ".join(labels)
 
 

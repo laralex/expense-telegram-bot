@@ -19,6 +19,7 @@
 !migrate_backup.py
 !parse_tinkoff_bank_report.py
 !parser.py
+!pyproject.toml
 !receipt-tracker.service
 !requirements-dev.txt
 !requirements.txt

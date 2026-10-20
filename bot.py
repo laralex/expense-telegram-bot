@@ -225,8 +225,8 @@ def _build_balance_menu(
     prev_month = prev_dt.strftime("%Y-%m")
     next_month = next_dt.strftime("%Y-%m")
     rows = [[
-        InlineKeyboardButton("←", callback_data=f"balance_month_nav:{prev_month}"),
-        InlineKeyboardButton("→", callback_data=f"balance_month_nav:{next_month}")
+        InlineKeyboardButton(f"← {_month_label(prev_month)}", callback_data=f"balance_month_nav:{prev_month}"),
+        InlineKeyboardButton(f"{_month_label(next_month)} →", callback_data=f"balance_month_nav:{next_month}")
     ]]
     rows.append([
         InlineKeyboardButton("\uff0b Add",    callback_data="balance_add"),
@@ -239,7 +239,7 @@ def _build_balance_menu(
         amount = month_values.get(name)
         ccy = currencies.get(name, "RUB")
         label = "{}: {}".format(name, _format_ccy_amount(amount, ccy))
-        rows.append([InlineKeyboardButton(label, callback_data="balance_set:{}".format(name))])
+        rows.append([InlineKeyboardButton(label, callback_data=f"balance_set:{month}:{name}")])
 
     # Per-currency subtotals
     if current_names:
@@ -620,6 +620,9 @@ async def auth_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     stores = ctx.bot_data["user_stores"]
     if user.id not in stores:
         stores[user.id] = Storage(data_dir=str(DATA_DIR / str(user.id)))
+        if ctx.bot_data.get("categories_yaml"):
+            stores[user.id].bootstrap_categories_from_yaml(ctx.bot_data["categories_yaml"])
+        stores[user.id].load_categories_to_cache()
     ctx.user_data["store"] = stores[user.id]
 
 
@@ -642,8 +645,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "Message content can have any order e.g. 'restaurant F date 100', "
         "as long as the category and amount must be found unambiguously.\n"
         f"Send just the amount e.g. '100' to use the default expense category {DEFAULT_CATEGORY} and no label.\n"
-        #"\nA category is detected when these keywords are used:\n"
-        #"\n".join([f"{c['abbrev']} — {', '.join(c['keywords'])}" for c in ctx.bot_data['categories'] if c['abbrev']]) + "\n"
         "\nTo record an income, send a message like '/in 100 salary may', "
         "here 100 is amount, 'salary may' is custom label, there are no categories supported. \n"
         "\n"
@@ -731,6 +732,33 @@ async def cb_backup_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
             return
         await query.edit_message_text('Please send the zip file you want to restore.')
 
+async def cmd_categories(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all current categories and their trigger keywords."""
+    store: Storage = ctx.user_data["store"]
+    categories = store._categories_cache
+    
+    buttons = []
+    for cat in categories:
+        abbrev = cat.get("abbrev", None)
+        name = cat.get("name", None)
+        if not abbrev:
+            cat_label = "Uncategorized"
+        else:
+            cat_label = f"{name} ({abbrev})"
+            
+        keywords_str = ", ".join(cat.get("keywords", []))
+        button_text = f"{cat_label} triggered by [{keywords_str}]"
+        buttons.append([InlineKeyboardButton(button_text, callback_data="noop")])
+    
+    if not buttons:
+        await update.message.reply_text("No categories defined.")
+        return
+    
+    await update.message.reply_text(
+        "Available categories and their trigger keywords:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
 async def cmd_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     store: Storage = ctx.user_data["store"]
     current = store.get_current_month()
@@ -743,7 +771,6 @@ async def cmd_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "Select active month:",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
-
 
 async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text, markup = _build_report_type_keyboard()
@@ -1060,7 +1087,8 @@ async def cb_erase_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     }
     text, markup = _build_erase_keyboard(ctx.user_data["erase"])
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_erase_back_months(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1090,7 +1118,8 @@ async def cb_erase_toggle(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         state["selected"].add(idx)
     text, markup = _build_erase_keyboard(state)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_erase_toggle_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1106,7 +1135,8 @@ async def cb_erase_toggle_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE) ->
         state["selected"] = set(range(total))
     text, markup = _build_erase_keyboard(state)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_erase_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1118,7 +1148,8 @@ async def cb_erase_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     state["page"] = int(query.data.split(":")[1])
     text, markup = _build_erase_keyboard(state)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_erase_do_selected(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1190,7 +1221,8 @@ async def _render_balance_menu_on_query(query, store: "Storage") -> None:
     month = store.get_current_month()
     text, markup = await _build_balance_menu_from_store(store, month)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_balance_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """User picked a balance from the disambiguation / no-match picker."""
@@ -1200,7 +1232,7 @@ async def cb_balance_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     store: Storage = ctx.user_data["store"]
     state = ctx.user_data.get("balance", {})
     amount = state.get("pending_amount")
-    month = store.get_current_month()
+    month = state.get("pending_month", store.get_current_month())
     status, prompt = await _commit_balance_with_rate_check(store, ctx, month, name, amount)
     if status == "rate_prompt":
         await query.edit_message_text(prompt)
@@ -1226,10 +1258,17 @@ async def cb_balance_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     """User tapped a balance button in the menu — prompt for a value."""
     query = update.callback_query
     await query.answer()
-    name = query.data.split(":", 1)[1]
+    parts = query.data.split(":")
+    if len(parts) == 3:
+        month = parts[1]
+        name = parts[2]
+    else:
+        name = parts[1]
+        month = ctx.user_data.get("store").get_current_month()
     state = ctx.user_data.setdefault("balance", {})
     state["awaiting"] = "set_value"
     state["pending_name"] = name
+    state["pending_month"] = month
     state["menu_message_id"] = query.message.message_id
     await query.edit_message_text(f"Enter new value for *{name}*:", parse_mode="Markdown")
 
@@ -1266,7 +1305,8 @@ async def cb_balance_remove_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     name = query.data.split(":", 1)[1]
     text, markup = _build_balance_remove_confirm(name)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_balance_remove_keep(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1362,7 +1402,8 @@ async def cb_balance_edit_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
     ctx.user_data["balance"] = {"awaiting": "pick_currency", "pending_name": name, "edit": True}
     text, markup = _build_currency_picker(name)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_balance_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1377,7 +1418,8 @@ async def cb_balance_month_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
     store = ctx.user_data["store"]
     text, markup = await _build_balance_menu_from_store(store, month)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 async def cmd_income(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Record income if text follows the command; show error otherwise."""
     args = update.message.text.strip().split(None, 1)
@@ -1493,8 +1535,16 @@ async def _record_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: 
     month = store.get_current_month()
     store.append_record(month, cat, amount, title)
     title_part = f" — {title}" if title else ""
+    display_cat = cat
+    for c in categories:
+        if c['abbrev'] == cat:
+            for kw in c['keywords']:
+                if kw.lower() != cat.lower() and len(kw) > 1:
+                    display_cat = kw.capitalize()
+                    break
+            break
     await update.message.reply_text(
-        f"✅ Expense recorded: *{cat}* {amount}{title_part} ({_month_label(month)})",
+        f"✅ Expense recorded: *{display_cat}* {amount}{title_part} ({_month_label(month)})",
         parse_mode="Markdown",
     )
 
@@ -1543,7 +1593,7 @@ async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
             await update.message.reply_text("❌ Please enter a number.")
             return
         name = state["pending_name"]
-        month = store.get_current_month()
+        month = state.get("pending_month", store.get_current_month())
         status, prompt = await _commit_balance_with_rate_check(store, ctx, month, name, amount)
         if status == "rate_prompt":
             await update.message.reply_text(prompt)
@@ -1551,7 +1601,7 @@ async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
         ctx.user_data.pop("balance", None)
         menu_text, markup = await _build_balance_menu_from_store(store, month)
         await update.message.reply_text(
-            f"✅ {name}: {_format_balance_amount(amount)}\n\n{menu_text}",
+            f"✅ *{name}*: {_format_balance_amount(amount)} ({_month_label(month)})\n\n{menu_text}",
             reply_markup=markup,
         )
 
@@ -1624,7 +1674,7 @@ async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
         menu_text, markup = await _build_balance_menu_from_store(store, month)
         await update.message.reply_text(
             f"✅ Rate saved: 1 {ccy} = {rate} RUB\n"
-            f"✅ {name}: {_format_balance_amount(amount)}\n\n{menu_text}",
+            f"✅ *{name}*: {_format_balance_amount(amount)} ({_month_label(month)})\n\n{menu_text}",
             reply_markup=markup,
         )
 
@@ -1840,7 +1890,8 @@ async def cb_fmt_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     pos = max(0, min(pos, len(fmt) - 1))
     text, markup = _build_fmt_editor(report_type, fmt, pos)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_fmt_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1855,7 +1906,8 @@ async def cb_fmt_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     store.set_format(report_type, fmt)
     text, markup = _build_fmt_editor(report_type, fmt, pos)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_fmt_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1867,7 +1919,8 @@ async def cb_fmt_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     pos = max(0, min(pos, len(fmt) - 1))
     text, markup = _build_fmt_editor(report_type, fmt, pos)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_fmt_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1882,7 +1935,8 @@ async def cb_fmt_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     pos = len(fmt) - 1
     text, markup = _build_fmt_editor(report_type, fmt, pos)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 async def cb_fmt_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1899,7 +1953,8 @@ async def cb_fmt_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     store.set_format(report_type, fmt)
     text, markup = _build_fmt_editor(report_type, fmt, pos)
     await query.edit_message_text(text, reply_markup=markup)
-
+    if "balance" in ctx.user_data and ctx.user_data["balance"].get("awaiting") is None:
+        ctx.user_data["balance"]["pending_month"] = ctx.user_data["store"].get_current_month()
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
@@ -1910,6 +1965,7 @@ async def post_init(app: Application) -> None:
         BotCommand("in", "Record income entry"),
         BotCommand("out", "Record expense entry"),
         BotCommand("balance", "Manage bank account balances"),
+        BotCommand("categories", "List available expense categories"),
         BotCommand("export", "Export collected data as text or file"),
         BotCommand("erase", "Erase expense or income records"),
         BotCommand("settings", "Configure report format"),
@@ -1939,12 +1995,13 @@ def main() -> None:
     _migrate_legacy_store(user_ids)
     
     categories_path = Path(__file__).parent / "categories.yaml"
-    categories = load_categories(categories_path)
+    categories_data = load_categories(categories_path)
     app = Application.builder().token(token).post_init(post_init).build()
     app.bot_data["user_ids"] = set(user_ids)
     app.bot_data["owner_id"] = owner_id
     app.bot_data["user_stores"] = {}
-    app.bot_data["categories"] = categories
+    app.bot_data["categories_yaml"] = categories_data
+    app.bot_data["categories"] = categories_data
 
     # Auth + per-user store binding — group -1 runs before everything else
     app.add_handler(TypeHandler(Update, auth_check), group=-1)
@@ -1952,6 +2009,7 @@ def main() -> None:
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("month", cmd_month))
+    app.add_handler(CommandHandler("categories", cmd_categories))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("erase", cmd_erase))
     app.add_handler(CommandHandler("in", cmd_income))

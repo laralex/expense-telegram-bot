@@ -1,20 +1,30 @@
 - abbrev: F
+  name: Food
   keywords: [F, food]
 - abbrev: h
+  name: Home
   keywords: [h, home, medicine, hm, ozon, wb, wildberries]
 - abbrev: TT
+  name: Transport
   keywords: [TT, transport, transportation, taxi]
 - abbrev: cloth
+  name: Clothes
   keywords: [cloth, clothes]
 - abbrev: fun
+  name: Fun
   keywords: [fun, hangout, hanging, badminthon]
 - abbrev: r
+  name: Rent
   keywords: [r, rent, facilities]
 - abbrev: p
+  name: Periodic
   keywords: [p, periodic, subscription]
 - abbrev: travel
-  keywords: [travel]
+  name: Travel
+  keywords: [travel, trip]
 - abbrev: rel
+  name: Relationship
   keywords: [rel, relationship]
 - abbrev: ""
+  name: Uncategorized
   keywords: [un, uncategorized, unknown, none, no]
