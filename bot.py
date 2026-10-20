@@ -630,17 +630,17 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     # NOTE: comment for LLM agents - don't update the content of /start command without human approval
     # must not ever change it on your will
     cmds = [
-        "To record an expense, send a message like '/out 100 F restaurant date'. "
-        "Here 100 is amount, F is category shortcut (Food) and 'restaurant date' is custom label. "
+        "To record an expense, send a message like '/out 100 F restaurant date', "
+        "here 100 is amount, F is category shortcut (Food) and 'restaurant date' is custom label. "
         "You can omit '/out' for brevity. "
         "Message content can have any order e.g. 'restaurant F date 100', "
         "as long as the category and amount must be found unambiguously.\n"
         f"Send just the amount e.g. '100' to use the default expense category {DEFAULT_CATEGORY} and no label.\n"
+        #"\nA category is detected when these keywords are used:\n"
+        #"\n".join([f"{c['abbrev']} — {', '.join(c['keywords'])}" for c in ctx.bot_data['categories'] if c['abbrev']]) + "\n"
+        "\nTo record an income, send a message like '/in 100 salary may', "
+        "here 100 is amount, 'salary may' is custom label, there are no categories supported. \n"
         "\n"
-        "To record an income, send a message like '/in 100 salary may'. "
-        "Here 100 is amount, 'salary may' is custom label, there are no categories supported. \n"
-        "\n"
-        "Other commands:\n"
         "/month — set active month, where next incomes and expenses are recorded.\n"
         "/erase — enter menu to delete records, '/erase in 10' delete last 10 income records. "
         "'/erase out 10' delete last 10 expense records. "
@@ -648,10 +648,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/export — generate a file/text with the income, expenses, balances.\n"
 
         "/balance — specify bank account / broker / cash balances per-month.\n"
-        "/settings — change bot settings.\n",
+        "/settings — change bot settings.",
     ]
     if is_owner:
-        cmds.append("/backup — (bot owner only) dump or restore backup of the bot data.\n")
+        cmds.append("/backup — (bot owner only) dump or restore backup of the bot data.")
         
     await update.message.reply_text(
         f"Active month: *{month_label}*\n\n" + "\n".join(cmds),
@@ -666,8 +666,10 @@ async def cmd_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton('Create Backup', callback_data='backup:create')],
-        [InlineKeyboardButton('Restore Backup', callback_data='backup:restore')]
+        [
+            InlineKeyboardButton('Create Backup', callback_data='backup:create'),
+            InlineKeyboardButton('Restore Backup', callback_data='backup:restore')
+        ]
     ])
     await update.message.reply_text('Choose a backup action:', reply_markup=keyboard)
 
@@ -684,18 +686,34 @@ async def cb_backup_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
 
         try:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            zip_filename = f'backup_{timestamp}.zip'
+            backup_name = f"backup_{timestamp}"
+            zip_filename = f"{backup_name}.zip"
             buf = io.BytesIO()
+            
             with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for file in data_dir.rglob('*'):
-                    if file.is_file() and not file.name.startswith('.'):
-                        zf.write(file, Path(data_dir.name) / file.relative_to(data_dir))
+                # We only want to backup 'data/' directory and '.env' file
+                targets = []
+                if Path("data").is_dir():
+                    targets.append(Path("data"))
+                if Path(".env").is_file():
+                    targets.append(Path(".env"))
+                
+                for target in targets:
+                    if target.is_dir():
+                        for file in target.rglob('*'):
+                            if file.is_file():
+                                # Path inside zip: backup_timestamp/data/...
+                                zf.write(file, Path(backup_name) / target.name / file.relative_to(target))
+                    else:
+                        # Path inside zip: backup_timestamp/.env
+                        zf.write(target, Path(backup_name) / target.name)
+            
             buf.seek(0)
             await query.edit_message_text('Generating backup...')
             await query.message.reply_document(
                 document=buf, 
                 filename=zip_filename,
-                caption='Database backup created successfully.'
+                caption=f'Backup created successfully at {timestamp}.'
             )
         except Exception as e:
             await query.edit_message_text(f"Error generating backup: {str(e)}")
@@ -1635,20 +1653,23 @@ async def handle_restore_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE) ->
                 zf.extractall(tmp_dir)
             
             db_file = None
+            # Search for storage.db in the extracted content
             for root, _, files in os.walk(tmp_dir):
                 if "storage.db" in files:
                     db_file = Path(root) / "storage.db"
                     break
             
             if db_file is None:
-                await update.message.reply_text("Could not find storage.db in the zip file.")
+                await update.message.reply_text("Could not find 'storage.db' in the uploaded zip file.")
                 return
 
             store: Storage = ctx.user_data["store"]
             target_db = store._db_path
+            
+            # Perform the replacement
             shutil.copy2(db_file, target_db)
             
-            await update.message.reply_text("Database restored successfully!")
+            await update.message.reply_text(f"✅ Database restored successfully from {update.message.document.file_name}!")
             
         except Exception as e:
             await update.message.reply_text(f"Error during restoration: {str(e)}")
@@ -1877,17 +1898,25 @@ async def cb_fmt_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ── main ──────────────────────────────────────────────────────────────────────
 
 async def post_init(app: Application) -> None:
-    await app.bot.set_my_commands([
+    commands = [
         BotCommand("start", "Welcome + active month"),
         BotCommand("month", "Change active month"),
-        BotCommand("export", "Generate expense or income report"),
-        BotCommand("erase", "Erase records"),
         BotCommand("in", "Record income entry"),
-        BotCommand("out", "Record expense"),
+        BotCommand("out", "Record expense entry"),
+        BotCommand("balance", "Manage bank account balances"),
+        BotCommand("export", "Export collected data as text or file"),
+        BotCommand("erase", "Erase expense or income records"),
         BotCommand("settings", "Configure report format"),
-        BotCommand("balance", "Manage account balances"),
-        BotCommand("backup", "Create a database backup"),
-    ])
+    ]
+    await app.bot.set_my_commands(commands)
+
+    owner_id = app.bot_data.get("owner_id")
+    if owner_id and owner_id > 0:
+        try:
+            owner_commands = commands + [BotCommand("backup", "Create/Restore bot data backup")]
+            await app.bot.set_chat_commands(owner_commands, chat_id=owner_id)
+        except Exception as e:
+            logging.error(f"Failed to set chat commands for owner {owner_id}: {e}")
 
 
 def main() -> None:
@@ -1923,8 +1952,7 @@ def main() -> None:
     app.add_handler(CommandHandler("out", cmd_out))
     app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CommandHandler("balance", cmd_balance))
-    app.add_handler(CommandHandler("backup", cmd_backup)
-)
+    app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CallbackQueryHandler(cb_backup_action, pattern=r"^backup:"))
 
     # Callbacks

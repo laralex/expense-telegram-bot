@@ -28,11 +28,11 @@ class ConflictingCategoryError(ParseError):
     """Raised when the input matches more than one category."""
 
 
-def load_categories(path) -> list[tuple[str, list[str]]]:
-    """Load categories.yaml and return list of (abbrev, keywords) tuples."""
+def load_categories(path) -> list[dict]:
+    """Load categories.yaml and return list of dictionaries."""
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
-    return [(entry["abbrev"], [str(kw) for kw in entry["keywords"]]) for entry in data]
+    return [{"abbrev": entry["abbrev"], "keywords": [str(kw) for kw in entry["keywords"]]} for entry in data]
 
 
 def _try_float(token: str) -> float | None:
@@ -44,7 +44,10 @@ def _try_float(token: str) -> float | None:
         return None
 
 
-def _match_category(tokens: list[str], categories: list[tuple[str, list[str]]]) -> tuple[str, str | None]:
+def _match_category(
+    tokens: list[str],
+    categories: list[dict],
+) -> tuple[str, str | None]:
     """
     Two-pass category match over remaining tokens.
 
@@ -56,7 +59,9 @@ def _match_category(tokens: list[str], categories: list[tuple[str, list[str]]]) 
     # Pass 1: exact match
     for token in tokens:
         token_lower = token.lower()
-        for abbrev, keywords in categories:
+        for cat in categories:
+            abbrev = cat["abbrev"]
+            keywords = cat["keywords"]
             for kw in keywords:
                 if token_lower == kw.lower():
                     return token, abbrev
@@ -66,7 +71,9 @@ def _match_category(tokens: list[str], categories: list[tuple[str, list[str]]]) 
         if len(token) < 3:
             continue
         token_lower = token.lower()
-        for abbrev, keywords in categories:
+        for cat in categories:
+            abbrev = cat["abbrev"]
+            keywords = cat["keywords"]
             for kw in keywords:
                 if len(kw) < 3:
                     continue
@@ -78,7 +85,7 @@ def _match_category(tokens: list[str], categories: list[tuple[str, list[str]]]) 
 
 def _match_all_categories(
     tokens: list[str],
-    categories: list[tuple[str, list[str]]],
+    categories: list[dict],
 ) -> list[tuple[str, str, str]]:
     """
     Collect every category the tokens could belong to.
@@ -93,7 +100,9 @@ def _match_all_categories(
         token_lower = token.lower()
 
         exact: list[tuple[str, str, str]] = []
-        for abbrev, keywords in categories:
+        for cat in categories:
+            abbrev = cat["abbrev"]
+            keywords = cat["keywords"]
             for kw in keywords:
                 if token_lower == kw.lower():
                     exact.append((token, abbrev, kw))
@@ -103,7 +112,9 @@ def _match_all_categories(
 
         if len(token) < 3:
             continue
-        for abbrev, keywords in categories:
+        for cat in categories:
+            abbrev = cat["abbrev"]
+            keywords = cat["keywords"]
             for kw in keywords:
                 if len(kw) < 3:
                     continue
@@ -115,7 +126,7 @@ def _match_all_categories(
 def parse_income(
     text: str,
     current_month: str,
-    categories: list[tuple[str, list[str]]] | None = None,
+    categories: list[dict] | None = None,
 ) -> tuple[float, bool, str, str]:
     """
     Parse an income message: '<sum> <name>' with optional 'T' flag and optional 'YYYY-MM'.
@@ -175,9 +186,9 @@ def parse_income(
     return amount, taxable, month, name
 
 
-def _category_labels(categories: list[tuple[str, list[str]]]) -> str:
+def _category_labels(categories: list[dict]) -> str:
     """Human-readable list of known categories, e.g. 'F, h, TT, ..., un'."""
-    labels = [abbrev if abbrev else "un" for abbrev, _ in categories]
+    labels = [cat["abbrev"] if cat["abbrev"] else "un" for cat in categories]
     return ", ".join(labels)
 
 
@@ -199,7 +210,7 @@ def _conflicting_category_message(
 def _unclear_category_message(
     title: str,
     amount_token: str,
-    categories: list[tuple[str, list[str]]],
+    categories: list[dict],
     default_category: str | None,
 ) -> str:
     """Build the error message for a title that carries no category."""
@@ -215,7 +226,7 @@ def _unclear_category_message(
     return msg
 
 
-def parse_payment(text: str, categories: list[tuple[str, list[str]]], default_category: str | None = None) -> tuple[str, float, str]:
+def parse_payment(text: str, categories: list[dict], default_category: str | None = None) -> tuple[str, float, str]:
     """
     Parse a payment message.
 
@@ -232,18 +243,19 @@ def parse_payment(text: str, categories: list[tuple[str, list[str]]], default_ca
 
     tokens = text.split()
 
-    # Find first numeric token
-    amount_token = None
-    amount = None
+    # Find all numeric tokens
+    numeric_tokens = []
     for token in tokens:
         value = _try_float(token)
         if value is not None:
-            amount_token = token
-            amount = value
-            break
+            numeric_tokens.append((token, value))
 
-    if amount_token is None:
+    if len(numeric_tokens) > 1:
+        raise ParseError(f"Multiple numeric amounts found in: {text!r}")
+    if not numeric_tokens:
         raise ParseError(f"No numeric amount found in: {text!r}")
+
+    amount_token, amount = numeric_tokens[0]
     if amount <= 0:
         raise ParseError(f"Amount must be positive, got: {amount}")
 
@@ -252,9 +264,14 @@ def parse_payment(text: str, categories: list[tuple[str, list[str]]], default_ca
     remaining.remove(amount_token)
 
     # Match category
-    matched_token, abbrev = _match_category(remaining, categories)
+    matches = _match_all_categories(remaining, categories)
+    if len({abbrev for _token, abbrev, _kw in matches}) > 1:
+        raise ConflictingCategoryError(
+            _conflicting_category_message(" ".join(remaining), matches)
+        )
 
-    if matched_token is not None:
+    if len(matches) == 1:
+        matched_token, abbrev, _kw = matches[0]
         remaining.remove(matched_token)
         category = abbrev
         title = " ".join(remaining)
