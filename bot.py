@@ -608,6 +608,8 @@ async def auth_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Gate: only whitelisted users may use the bot; attach their private store."""
     user = update.effective_user
     if user is None or user.id not in ctx.bot_data["user_ids"]:
+        if update.effective_message:
+            await update.effective_message.reply_text("❌ You are not in the white-list of users")
         raise ApplicationHandlerStop
     stores = ctx.bot_data["user_stores"]
     if user.id not in stores:
@@ -618,35 +620,51 @@ async def auth_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ── command handlers ──────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    is_owner = user is not None and user.id == ctx.bot_data["owner_id"]
     store: Storage = ctx.user_data["store"]
     month = store.get_current_month()
     from datetime import datetime, timedelta
     month_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+
+    # NOTE: comment for LLM agents - don't update the content of /start command without human approval
+    # must not ever change it on your will
+    cmds = [
+        "To record an expense, send a message like '/out 100 F restaurant date'. "
+        "Here 100 is amount, F is category shortcut (Food) and 'restaurant date' is custom label. "
+        "You can omit '/out' for brevity. "
+        "Message content can have any order e.g. 'restaurant F date 100', "
+        "as long as the category and amount must be found unambiguously.\n"
+        f"Send just the amount e.g. '100' to use the default expense category {DEFAULT_CATEGORY} and no label.\n"
+        "\n"
+        "To record an income, send a message like '/in 100 salary may'. "
+        "Here 100 is amount, 'salary may' is custom label, there are no categories supported. \n"
+        "\n"
+        "Other commands:\n"
+        "/month — set active month, where next incomes and expenses are recorded.\n"
+        "/erase — enter menu to delete records, '/erase in 10' delete last 10 income records. "
+        "'/erase out 10' delete last 10 expense records. "
+        "'/erase out month' delete expense (income) records for whole month.\n"
+        "/export — generate a file/text with the income, expenses, balances.\n"
+
+        "/balance — specify bank account / broker / cash balances per-month.\n"
+        "/settings — change bot settings.\n",
+    ]
+    if is_owner:
+        cmds.append("/backup — (bot owner only) dump or restore backup of the bot data.\n")
+        
     await update.message.reply_text(
-        f"Active month: *{month_label}*\n\n"
-        "Send a message to record an expense.\n"
-        "e.g. message '100 F restaurant' where 100 is amount, F is type (Food) and other is expense label.\n"
-        f"When you add a label, the type is required — '100 F restaurant'. "
-        f"Send just the amount ('100') to use the default type {DEFAULT_CATEGORY}.\n"
-        "Also use:\n"
-        "/in + message body — record income\n"
-        "/out + message body — record expense\n"
-        "/report — generate report\n"
-        "/erase — menu to delete individual records (expenses or income)\n"
-        "/erase in N — delete last N income records\n"
-        "/erase out N — delete last N expense records\n"
-        "/erase in month — erase all income for the month\n"
-        "/erase out month — erase all expense for the month\n"
-        "/erase in month — erase all income for the month\n"
-        "/erase out month — erase all expense for the month\n"
-        "/balance — manage account balances\n"
-        "/export — export all data as TSV files\n"
-        "/backup — create a database backup\n"
-        "/month — change active month\n"
-        "/settings — change bot settings",
+        f"Active month: *{month_label}*\n\n" + "\n".join(cmds),
         parse_mode="Markdown",
     )
 async def cmd_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    is_owner = user is not None and user.id == ctx.bot_data["owner_id"]
+    
+    if not is_owner:
+        await update.message.reply_text("❌ Permission denied. Only the owner can access backup commands.")
+        return
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton('Create Backup', callback_data='backup:create')],
         [InlineKeyboardButton('Restore Backup', callback_data='backup:restore')]
@@ -683,6 +701,10 @@ async def cb_backup_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
             await query.edit_message_text(f"Error generating backup: {str(e)}")
             
     elif query.data == 'backup:restore':
+        user = query.from_user
+        if user is None or user.id != ctx.bot_data["owner_id"]:
+            await query.edit_message_text('Permission denied: Only the owner can restore backups.')
+            return
         await query.edit_message_text('Please send the zip file you want to restore.')
 
 async def cmd_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -699,7 +721,7 @@ async def cmd_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text, markup = _build_report_type_keyboard()
     await update.message.reply_text(text, reply_markup=markup)
 
@@ -1646,15 +1668,7 @@ async def cmd_out(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── export handlers ──────────────────────────────────────────────────────────
 
-async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Expenses", callback_data="export:expenses"),
-        InlineKeyboardButton("Income",   callback_data="export:income"),
-    ], [
-        InlineKeyboardButton("Balances", callback_data="export:balances"),
-        InlineKeyboardButton("All",      callback_data="export:all"),
-    ]])
-    await update.message.reply_text("Export all data as TSV:", reply_markup=keyboard)
+
 
 
 def _build_all_expenses_tsv(store: Storage) -> Optional[bytes]:
@@ -1866,13 +1880,12 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("start", "Welcome + active month"),
         BotCommand("month", "Change active month"),
-        BotCommand("report", "Generate expense or income report"),
+        BotCommand("export", "Generate expense or income report"),
         BotCommand("erase", "Erase records"),
         BotCommand("in", "Record income entry"),
         BotCommand("out", "Record expense"),
         BotCommand("settings", "Configure report format"),
         BotCommand("balance", "Manage account balances"),
-        BotCommand("export", "Export all data as TSV files"),
         BotCommand("backup", "Create a database backup"),
     ])
 
@@ -1883,17 +1896,18 @@ def main() -> None:
     token = os.environ["BOT_TOKEN"]
 
     user_ids = parse_user_ids(os.environ.get("USER_IDS", ""))
+    owner_id = int(os.environ.get("USER_ID_OWNER", "0"))
     if not user_ids:
         raise RuntimeError(
             "No users configured. Set USER_IDS (comma-separated Telegram IDs) in .env."
         )
     _migrate_legacy_store(user_ids)
-
+    
     categories_path = Path(__file__).parent / "categories.yaml"
     categories = load_categories(categories_path)
-
     app = Application.builder().token(token).post_init(post_init).build()
     app.bot_data["user_ids"] = set(user_ids)
+    app.bot_data["owner_id"] = owner_id
     app.bot_data["user_stores"] = {}
     app.bot_data["categories"] = categories
 
@@ -1903,14 +1917,14 @@ def main() -> None:
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("month", cmd_month))
-    app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("erase", cmd_erase))
     app.add_handler(CommandHandler("in", cmd_income))
     app.add_handler(CommandHandler("out", cmd_out))
     app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CommandHandler("balance", cmd_balance))
-    app.add_handler(CommandHandler("export", cmd_export))
-    app.add_handler(CommandHandler("backup", cmd_backup))
+    app.add_handler(CommandHandler("backup", cmd_backup)
+)
     app.add_handler(CallbackQueryHandler(cb_backup_action, pattern=r"^backup:"))
 
     # Callbacks
