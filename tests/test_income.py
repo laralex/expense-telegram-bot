@@ -120,6 +120,7 @@ class _FakeCtx:
     def __init__(self, categories=None, month="2026-03"):
         self.store = _FakeStore(month)
         self.bot_data = {"store": self.store, "categories": categories or CATS}
+        self.user_data = {"store": self.store}
 
 
 def _run(text):

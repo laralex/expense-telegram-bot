@@ -55,7 +55,7 @@ echo "==> Updating service ExecStart to use venv python"
 sudo sed -i "s|^ExecStart=.*|ExecStart=$VENV/bin/python bot.py|" "$DEPLOY_DIR/$SERVICE_FILE"
 
 if [ ! -f "$DEPLOY_DIR/.env" ]; then
-    echo "==> Creating .env from example (fill in BOT_TOKEN and OWNER_ID)"
+    echo "==> Creating .env from example (fill in BOT_TOKEN and USER_IDS)"
     sudo cp .env.example "$DEPLOY_DIR/.env"
     sudo chmod 600 "$DEPLOY_DIR/.env"
     echo ""

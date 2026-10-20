@@ -3,8 +3,9 @@ from telegram import Message
 """
 ## How to run
 
-1. Copy .env.example to .env and fill in BOT_TOKEN and OWNER_ID.
-   Get your OWNER_ID by messaging @userinfobot on Telegram.
+1. Copy .env.example to .env and fill in BOT_TOKEN and USER_IDS.
+   USER_IDS is a comma-separated list of Telegram user IDs allowed to use the bot.
+   Get your ID by messaging @userinfobot on Telegram.
 
 2. Install dependencies:
        pip install -r requirements.txt
@@ -395,13 +396,20 @@ def render_rows(
 
 # ── erase helpers ─────────────────────────────────────────────────────────────
 
-def _format_erase_preview(records: list, month: str) -> str:
+def _format_erase_preview(records: list, month: str, record_type: str) -> str:
     """Return a human-readable preview of records about to be erased."""
     if not records:
         return "❌ No records to erase."
     lines = [f"About to erase *{len(records)}* record(s) from *{_month_label(month)}*:"]
-    for date_str, cat, title, amount in records:
-        label = f"{cat} {amount}" + (f" — {title}" if title else "")
+    for record in records:
+        if record_type == "expense":
+            date_str, cat, title, amount = record
+            label = f"{cat} {amount}" + (f" — {title}" if title else "")
+        else:  # income
+            amount_str, taxable, name = record
+            label = f"{amount_str} — {name}"
+            if taxable:
+                label += " (taxable)"
         lines.append(f"  • {label}")
     return "\n".join(lines)
 
@@ -561,16 +569,56 @@ def _build_erase_keyboard(state: dict) -> tuple:
 
 # ── security ──────────────────────────────────────────────────────────────────
 
-async def owner_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    owner_id = ctx.bot_data["owner_id"]
-    if update.effective_user and update.effective_user.id != owner_id:
+DATA_DIR = Path("data")
+
+
+def parse_user_ids(raw: str) -> list[int]:
+    """Parse a comma-separated USER_IDS value into a list of ints.
+
+    Whitespace-tolerant, deduplicated, order preserved. Raises ValueError on
+    non-integer entries.
+    """
+    ids: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        uid = int(part)
+        if uid not in ids:
+            ids.append(uid)
+    return ids
+
+
+def _migrate_legacy_store(user_ids: list[int]) -> None:
+    """One-time move of the pre-multiuser data/storage.db into the first user's dir."""
+    legacy = DATA_DIR / "storage.db"
+    if not legacy.exists() or not user_ids:
+        return
+    target_dir = DATA_DIR / str(user_ids[0])
+    if (target_dir / "storage.db").exists():
+        return  # that user already has data — don't overwrite
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for suffix in ("", "-wal", "-shm"):
+        src = DATA_DIR / f"storage.db{suffix}"
+        if src.exists():
+            src.rename(target_dir / f"storage.db{suffix}")
+
+
+async def auth_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Gate: only whitelisted users may use the bot; attach their private store."""
+    user = update.effective_user
+    if user is None or user.id not in ctx.bot_data["user_ids"]:
         raise ApplicationHandlerStop
+    stores = ctx.bot_data["user_stores"]
+    if user.id not in stores:
+        stores[user.id] = Storage(data_dir=str(DATA_DIR / str(user.id)))
+    ctx.user_data["store"] = stores[user.id]
 
 
 # ── command handlers ──────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     month = store.get_current_month()
     from datetime import datetime, timedelta
     month_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
@@ -585,7 +633,12 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/out + message body — record expense\n"
         "/report — generate report\n"
         "/erase — menu to delete individual records (expenses or income)\n"
-        "/erase N — delete last N expense records\n"
+        "/erase in N — delete last N income records\n"
+        "/erase out N — delete last N expense records\n"
+        "/erase in month — erase all income for the month\n"
+        "/erase out month — erase all expense for the month\n"
+        "/erase in month — erase all income for the month\n"
+        "/erase out month — erase all expense for the month\n"
         "/balance — manage account balances\n"
         "/export — export all data as TSV files\n"
         "/backup — create a database backup\n"
@@ -605,7 +658,7 @@ async def cb_backup_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
     await query.answer()
     
     if query.data == 'backup:create':
-        store = ctx.bot_data['store']
+        store = ctx.user_data['store']
         data_dir = store._dir
         if not data_dir.exists():
             await query.edit_message_text('Error: Data directory not found.')
@@ -633,7 +686,7 @@ async def cb_backup_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
         await query.edit_message_text('Please send the zip file you want to restore.')
 
 async def cmd_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     current = store.get_current_month()
     months = _month_options(current)
     keyboard = []
@@ -652,36 +705,72 @@ async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_erase(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    store: Storage = ctx.bot_data["store"]
-    args = update.message.text.strip().split(None, 1)
+    args = update.message.text.strip().split(None, 2)
 
-    # /erase N — show last N expense records and ask to confirm (unchanged)
-    if len(args) == 2 and args[1].strip().isdigit():
-        n = int(args[1].strip())
-        month = store.get_current_month()
-        records = store.read_month(month)
-        preview_records = records[-n:] if n and records else []
-        text = _format_erase_preview(preview_records, month)
-        if not preview_records:
-            await update.message.reply_text(text)
-            return
+    if len(args) == 1:
+        # /erase -> type selector
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✓ Delete", callback_data=f"erase_last_n_do:{month}:{n}"),
-            InlineKeyboardButton("✗ Cancel", callback_data="erase_cancel"),
+            InlineKeyboardButton("Expenses", callback_data="erase_type:expense"),
+            InlineKeyboardButton("Income",   callback_data="erase_type:income"),
         ]])
-        await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+        await update.message.reply_text("Select type to erase:", reply_markup=keyboard)
         return
 
-    # /erase with no args — type selector
+    usage = "❌ Usage: /erase in N (income) or /erase out N (expense). Use 'month' to erase the whole month."
+
+    if len(args) != 3:
+        # /erase N, /erase in, /erase out — no longer supported
+        await update.message.reply_text(usage)
+        return
+
+    cmd_sub, n_str = args[1], args[2]
+    is_month_mode = (n_str == "month")
+    if not is_month_mode:
+        try:
+            n = int(n_str)
+            if n <= 0:
+                await update.message.reply_text("❌ N must be a positive number.")
+                return
+        except ValueError:
+            await update.message.reply_text("❌ N must be a number or 'month'.")
+            return
+    else:
+        n = 0
+    
+    if cmd_sub == "in":
+        record_type = "income"
+    elif cmd_sub == "out":
+        record_type = "expense"
+    else:
+        await update.message.reply_text(usage)
+        return
+
+    store: Storage = ctx.user_data["store"]
+    month = store.get_current_month()
+    if record_type == "income":
+        records = store.read_income(month)
+    else:
+        records = store.read_month(month)
+
+    if is_month_mode:
+        n = len(records)
+        preview_records = records
+    else:
+        preview_records = records[-n:] if records else []
+    
+    text = _format_erase_preview(preview_records, month, record_type)
+    if not preview_records:
+        await update.message.reply_text(text)
+        return
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Expenses", callback_data="erase_type:expense"),
-        InlineKeyboardButton("Income",   callback_data="erase_type:income"),
+        InlineKeyboardButton("✓ Delete", callback_data=f"erase_last_n_do:{month}:{n}:{record_type}"),
+        InlineKeyboardButton("✗ Cancel", callback_data="erase_cancel"),
     ]])
-    await update.message.reply_text("Select type to erase:", reply_markup=keyboard)
+    await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     args = update.message.text.strip().split(None, 2)
 
     # Quick form: /balance <name> <amount>
@@ -735,7 +824,7 @@ async def cb_set_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     month = query.data.split(":")[1]
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     store.set_current_month(month)
     await query.edit_message_text(f"✅ Active month set to *{_month_label(month)}*", parse_mode="Markdown")
 
@@ -744,7 +833,7 @@ async def cb_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     month = query.data.split(":")[1]
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     records = store.read_month(month)
     if not records:
         await query.edit_message_text(f"❌ No records for {_month_label(month)}.")
@@ -775,7 +864,7 @@ async def cb_report_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     query = update.callback_query
     await query.answer()
     report_type = query.data.split(":")[1]
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
 
     if report_type == "expense":
         months = store.list_months_with_counts()
@@ -843,10 +932,13 @@ async def cb_report_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
 async def cb_erase_last_n_do(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    _, month, n_str = query.data.split(":")
+    _, month, n_str, record_type = query.data.split(":")
     n = int(n_str)
-    store: Storage = ctx.bot_data["store"]
-    deleted = store.delete_last_n_records(month, n)
+    store: Storage = ctx.user_data["store"]
+    if record_type == "income":
+        deleted = store.delete_last_n_income_records(month, n)
+    else:
+        deleted = store.delete_last_n_records(month, n)
     await query.edit_message_text(
         f"✅ Deleted *{len(deleted)}* record(s) from *{_month_label(month)}*.",
         parse_mode="Markdown",
@@ -887,7 +979,7 @@ async def cb_erase_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     record_type = query.data.split(":")[1]
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     await _show_erase_month_selector(query, record_type, store)
 
 
@@ -895,7 +987,7 @@ async def cb_erase_month(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     query = update.callback_query
     await query.answer()
     _, record_type, month = query.data.split(":")
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
 
     if record_type == "expense":
         records = store.read_month(month)
@@ -929,7 +1021,7 @@ async def cb_erase_back_months(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
     await query.answer()
     record_type = query.data.split(":")[1]
     ctx.user_data.pop("erase", None)
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     await _show_erase_month_selector(query, record_type, store)
 
 
@@ -994,7 +1086,7 @@ async def cb_erase_do_selected(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
         await query.edit_message_text("Nothing selected.", reply_markup=markup)
         return
 
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     month = state["month"]
     indices = state["selected"]
 
@@ -1014,7 +1106,7 @@ async def cb_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     month = query.data.split(":")[1]
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     records = store.read_month(month)
     if not records:
         await query.message.reply_text(f"❌ No records for {_month_label(month)}.")
@@ -1059,7 +1151,7 @@ async def cb_balance_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     query = update.callback_query
     await query.answer()
     name = query.data.split(":", 1)[1]
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     state = ctx.user_data.get("balance", {})
     amount = state.get("pending_amount")
     month = store.get_current_month()
@@ -1111,7 +1203,7 @@ async def cb_balance_remove(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> N
     """User tapped － Remove — show list of current balances."""
     query = update.callback_query
     await query.answer()
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     names = store.get_balance_names()
     if not names:
         await query.answer("No balances to remove.", show_alert=True)
@@ -1134,7 +1226,7 @@ async def cb_balance_remove_keep(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     name = query.data.split(":", 1)[1]
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     store.remove_balance_name(name, keep_history=True)
     await _render_balance_menu_on_query(query, store)
 
@@ -1143,7 +1235,7 @@ async def cb_balance_remove_delete(update: Update, ctx: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     name = query.data.split(":", 1)[1]
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     store.remove_balance_name(name, keep_history=False)
     await _render_balance_menu_on_query(query, store)
 
@@ -1151,14 +1243,14 @@ async def cb_balance_remove_delete(update: Update, ctx: ContextTypes.DEFAULT_TYP
 async def cb_balance_remove_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     await _render_balance_menu_on_query(query, store)
 
 
 async def cb_balance_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     await _render_balance_menu_on_query(query, store)
 
 
@@ -1167,7 +1259,7 @@ async def cb_balance_ccy_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()
     _, name, ccy = query.data.split(":", 2)
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     state = ctx.user_data.get("balance", {}) or {}
     edit_mode = state.get("edit")
     if edit_mode:
@@ -1205,7 +1297,7 @@ async def cb_balance_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     """User tapped ⚙ Edit — show list of balances to edit currency."""
     query = update.callback_query
     await query.answer()
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     names = store.get_balance_names()
     if not names:
         await query.answer("No balances to edit.", show_alert=True)
@@ -1236,7 +1328,7 @@ async def cb_balance_month_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     await query.answer()
     month = query.data.split(":")[1]
-    store = ctx.bot_data["store"]
+    store = ctx.user_data["store"]
     text, markup = await _build_balance_menu_from_store(store, month)
     await query.edit_message_text(text, reply_markup=markup)
 
@@ -1258,7 +1350,7 @@ async def cmd_income(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     current_month = store.get_current_month()
     try:
         amount, taxable, month, name = parse_income(args[1].strip(), current_month)
@@ -1278,7 +1370,7 @@ async def cb_income_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
     query = update.callback_query
     await query.answer()
     month = query.data.split(":")[1]
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     records = store.read_income(month)
     if not records:
         await query.edit_message_text(f"❌ No income for {_month_label(month)}.")
@@ -1309,7 +1401,7 @@ async def cb_income_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     month = query.data.split(":")[1]
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     records = store.read_income(month)
     if not records:
         await query.message.reply_text(f"❌ No income for {_month_label(month)}.")
@@ -1328,7 +1420,7 @@ async def cb_income_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def cb_balance_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     tsv_bytes = await _build_all_balances_tsv(store)
     if not tsv_bytes:
         await query.message.reply_text("❌ No balance data yet.")
@@ -1342,7 +1434,7 @@ async def cb_balance_tsv(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
 # ── payment handler ───────────────────────────────────────────────────────────
 
 async def _record_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     categories = ctx.bot_data["categories"]
     try:
         cat, amount, title = parse_payment(text, categories, default_category=DEFAULT_CATEGORY)
@@ -1396,7 +1488,7 @@ async def _handle_balance_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
     state = ctx.user_data.get("balance", {})
     awaiting = state.get("awaiting")
     text = update.message.text.strip()
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
 
     if awaiting == "set_value":
         try:
@@ -1503,8 +1595,9 @@ async def handle_restore_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("Please send a valid .zip file.")
         return
 
-    owner_id = ctx.bot_data["owner_id"]
-    if update.effective_user.id != owner_id:
+    allowed = ctx.bot_data["user_ids"]
+    user = update.effective_user
+    if user is None or user.id not in allowed:
         return
 
     new_file = await update.message.document.get_file()
@@ -1529,7 +1622,7 @@ async def handle_restore_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE) ->
                 await update.message.reply_text("Could not find storage.db in the zip file.")
                 return
 
-            store: Storage = ctx.bot_data["store"]
+            store: Storage = ctx.user_data["store"]
             target_db = store._db_path
             shutil.copy2(db_file, target_db)
             
@@ -1622,7 +1715,7 @@ async def cb_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     export_type = query.data.split(":")[1]
-    store = ctx.bot_data["store"]  # type: Storage
+    store = ctx.user_data["store"]  # type: Storage
 
     if export_type == "expenses":
         tsv = _build_all_expenses_tsv(store)
@@ -1701,7 +1794,7 @@ async def cb_fmt_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await query.answer()
     _, report_type, pos_str = query.data.split(":")
     pos = int(pos_str)
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     fmt = store.get_format(report_type)
     pos = max(0, min(pos, len(fmt) - 1))
     text, markup = _build_fmt_editor(report_type, fmt, pos)
@@ -1713,7 +1806,7 @@ async def cb_fmt_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await query.answer()
     _, report_type, pos_str, value = query.data.split(":", 3)
     pos = int(pos_str)
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     fmt = store.get_format(report_type)
     if pos >= len(fmt):
         return  # stale callback — silently ignore
@@ -1728,7 +1821,7 @@ async def cb_fmt_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await query.answer()
     _, report_type, pos_str = query.data.split(":")
     pos = int(pos_str)
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     fmt = store.get_format(report_type)
     pos = max(0, min(pos, len(fmt) - 1))
     text, markup = _build_fmt_editor(report_type, fmt, pos)
@@ -1739,7 +1832,7 @@ async def cb_fmt_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     _, report_type = query.data.split(":")
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     fmt = store.get_format(report_type)
     if len(fmt) >= 10:
         return  # cap reached
@@ -1755,7 +1848,7 @@ async def cb_fmt_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await query.answer()
     _, report_type, pos_str = query.data.split(":")
     pos = int(pos_str)
-    store: Storage = ctx.bot_data["store"]
+    store: Storage = ctx.user_data["store"]
     fmt = store.get_format(report_type)
     if len(fmt) <= 1:
         return  # minimum one column
@@ -1788,18 +1881,24 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     load_dotenv()
     token = os.environ["BOT_TOKEN"]
-    owner_id = int(os.environ["OWNER_ID"])
+
+    user_ids = parse_user_ids(os.environ.get("USER_IDS", ""))
+    if not user_ids:
+        raise RuntimeError(
+            "No users configured. Set USER_IDS (comma-separated Telegram IDs) in .env."
+        )
+    _migrate_legacy_store(user_ids)
 
     categories_path = Path(__file__).parent / "categories.yaml"
     categories = load_categories(categories_path)
 
     app = Application.builder().token(token).post_init(post_init).build()
-    app.bot_data["store"] = Storage()
-    app.bot_data["owner_id"] = owner_id
+    app.bot_data["user_ids"] = set(user_ids)
+    app.bot_data["user_stores"] = {}
     app.bot_data["categories"] = categories
 
-    # Owner check — group -1 runs before everything else
-    app.add_handler(TypeHandler(Update, owner_check), group=-1)
+    # Auth + per-user store binding — group -1 runs before everything else
+    app.add_handler(TypeHandler(Update, auth_check), group=-1)
 
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))

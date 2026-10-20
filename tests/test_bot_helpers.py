@@ -170,7 +170,7 @@ def test_format_erase_preview_lists_all_records():
         ("2026-03-01", "food", "Lunch", "15.0"),
         ("2026-03-01", "taxi", "Uber", "8.5"),
     ]
-    text = _format_erase_preview(records, "2026-03")
+    text = _format_erase_preview(records, "2026-03", "expense")
     assert "Lunch" in text
     assert "Uber" in text
 
@@ -180,13 +180,24 @@ def test_format_erase_preview_shows_record_count():
         ("2026-03-01", "food", "Lunch", "15.0"),
         ("2026-03-01", "taxi", "Uber", "8.5"),
     ]
-    text = _format_erase_preview(records, "2026-03")
+    text = _format_erase_preview(records, "2026-03", "expense")
     assert "2" in text
 
 
 def test_format_erase_preview_empty_records():
-    text = _format_erase_preview([], "2026-03")
+    text = _format_erase_preview([], "2026-03", "expense")
     assert "No records" in text
+
+
+def test_format_erase_preview_income_records():
+    records = [
+        ("1000.0", True, "Salary"),
+        ("200.0", False, "Gift"),
+    ]
+    text = _format_erase_preview(records, "2026-03", "income")
+    assert "Salary" in text
+    assert "Gift" in text
+    assert "taxable" in text
 
 
 # ── _build_report_type_keyboard ───────────────────────────────────────────────
