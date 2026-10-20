@@ -219,11 +219,20 @@ def _build_balance_menu(
     currencies = currencies or {}
     rates = rates or {}
     lines = ["Balances \u2014 {}".format(_month_label(month))]
+    curr_dt = datetime.strptime(month, "%Y-%m")
+    prev_dt = (curr_dt.replace(day=1) - timedelta(days=1)).replace(day=1)
+    next_dt = (curr_dt.replace(day=1) + timedelta(days=32)).replace(day=1)
+    prev_month = prev_dt.strftime("%Y-%m")
+    next_month = next_dt.strftime("%Y-%m")
     rows = [[
+        InlineKeyboardButton("←", callback_data=f"balance_month_nav:{prev_month}"),
+        InlineKeyboardButton("→", callback_data=f"balance_month_nav:{next_month}")
+    ]]
+    rows.append([
         InlineKeyboardButton("\uff0b Add",    callback_data="balance_add"),
         InlineKeyboardButton("\uff0d Remove", callback_data="balance_remove"),
         InlineKeyboardButton("\u2699 Edit",    callback_data="balance_edit"),
-    ]]
+    ])
 
     # Per-account buttons with currency signs
     for name in current_names:
@@ -285,10 +294,7 @@ def _build_balance_menu(
     prev_month = prev_dt.strftime("%Y-%m")
     next_month = next_dt.strftime("%Y-%m")
 
-    rows.append([
-        InlineKeyboardButton("←", callback_data=f"balance_month_nav:{prev_month}"),
-        InlineKeyboardButton("→", callback_data=f"balance_month_nav:{next_month}")
-    ])
+
     rows.append([InlineKeyboardButton("✓ Done", callback_data="balance_done")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
